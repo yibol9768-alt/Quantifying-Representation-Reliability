@@ -1,0 +1,23 @@
+
+downstream:
+  dir: ../SSL-Inference/representations/simclr_ensemble
+  train: simclr_imagenet32_resnet18_{i}_seed_0_0_cifar100_train.pkl  # pretrain -> downstream
+  test: simclr_imagenet32_resnet18_{i}_seed_0_0_cifar100_test.pkl  # pretrain -> downstream
+  n_models: 10
+
+evaluation:
+  methods:
+    - Dist
+    - L2Norm
+    - FV
+  params:
+    n_pretrain: 100000
+    n_ref: 5000
+    k_list:
+      - 1
+      - 100
+  deep_ens:
+    dir: ../SSL-Inference/representations/simclr_ensemble
+    ref: simclr_imagenet32_resnet18_{j}_seed_0_0_imagenet32_train.pkl  # pretrain -> pretrain
+    eval: simclr_imagenet32_resnet18_{j}_seed_0_0_cifar100_test.pkl  # pretrain -> downstream
+    n_ens: 10
