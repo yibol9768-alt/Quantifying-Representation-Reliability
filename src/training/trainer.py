@@ -206,7 +206,8 @@ class Trainer:
 
     def save(self, path: str):
         """Save model weights"""
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if os.path.dirname(path):
+            os.makedirs(os.path.dirname(path), exist_ok=True)
         torch.save(self.model.state_dict(), path)
 
     def load(self, path: str):
