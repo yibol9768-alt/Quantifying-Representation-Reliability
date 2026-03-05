@@ -147,16 +147,35 @@ Closes #1
      - Git 提交信息
      - 配置文件
 
-2. **不要提交大数据文件**
+2. **系统代理配置** (国内网络加速)
+
+   在 AutoDL 等国内服务器上运行时，需要配置镜像加速：
+
+   ```bash
+   # HuggingFace 镜像 (已集成到代码中)
+   export HF_ENDPOINT=https://hf-mirror.com
+
+   # GitHub 加速 (如需从 GitHub 下载模型)
+   export GITHUB=https://github.com.cn
+
+   # PyPI 镜像
+   export PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+
+   # 如果有 HTTP/HTTPS 代理，设置：
+   # export http_proxy=http://proxy.example.com:port
+   # export https_proxy=http://proxy.example.com:port
+   ```
+
+3. **不要提交大数据文件**
    - 特征文件 (`*.pt`) 应加入 `.gitignore`
    - 模型权重文件应加入 `.gitignore`
    - 数据集文件不要提交
 
-3. **敏感信息保护**
+4. **敏感信息保护**
    - 不要提交包含本地绝对路径的代码
    - 使用相对路径或配置文件
 
-4. **文档同步**
+5. **文档同步**
    - README 是项目的主要文档
    - 修改代码时务必考虑是否需要更新文档
 
