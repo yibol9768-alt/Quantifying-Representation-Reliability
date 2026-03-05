@@ -5,19 +5,30 @@ import os
 import torch
 from typing import List, Dict, Optional, Union
 from tqdm import tqdm
-from pathlib import Path
 
 from src.models import get_model, MODEL_CONFIGS
-from src.data import StanfordCarsDataset
+from src.data import get_dataset
 
 
 class FeatureExtractor:
     """Extract features from pre-trained models"""
 
-    def __init__(self, device: str = "cuda", data_root: str = "stanford_cars"):
+    def __init__(
+        self,
+        device: str = "cuda",
+        dataset: str = "stanford_cars",
+        data_root: str = "data",
+    ):
+        """
+        Args:
+            device: Device to use for extraction
+            dataset: Dataset name (stanford_cars, cifar10, etc.)
+            data_root: Root directory for data
+        """
         self.device = device
+        self.dataset_name = dataset
         self.data_root = data_root
-        self.dataset = StanfordCarsDataset(data_root)
+        self.dataset = get_dataset(dataset, data_root)
         self.models = {}
 
     def load_model(self, model_type: str):
@@ -54,15 +65,15 @@ class FeatureExtractor:
         # Load models
         self.load_models(model_types)
 
-        # Get feature dimensions
-        feature_dims = [MODEL_CONFIGS[m]["feature_dim"] for m in model_types]
-
         # Load data
-        print(f"Loading {split} data...")
+        print(f"Loading {split} data from {self.dataset_name}...")
         if split == "train":
             image_paths, labels = self.dataset.load_train_data()
         else:
-            image_paths, labels = self.dataset.load_test_data(with_labels=True)
+            image_paths, labels = self.dataset.load_test_data()
+
+        print(f"Dataset: {self.dataset_name}")
+        print(f"Samples: {len(image_paths)}, Classes: {self.dataset.num_classes}")
 
         # Initialize storage
         features_dict = {f"{m}_features": [] for m in model_types}
@@ -92,6 +103,8 @@ class FeatureExtractor:
             result[key] = torch.cat(features_dict[key], dim=0)
 
         result["labels"] = torch.tensor(labels_list, dtype=torch.long)
+        result["dataset"] = self.dataset_name
+        result["num_classes"] = self.dataset.num_classes
 
         # Print info
         print(f"\nExtraction complete:")
@@ -119,11 +132,11 @@ class FeatureExtractor:
 
 if __name__ == "__main__":
     # Test single model extraction
-    extractor = FeatureExtractor(device="cuda")
+    extractor = FeatureExtractor(device="cuda", dataset="cifar10")
 
     # Extract CLIP features
     features = extractor.extract(
         model_types="clip",
         split="train",
-        output_path="features/clip_train.pt"
+        output_path="features/cifar10_clip_train.pt"
     )

@@ -2,10 +2,9 @@
 Extract features from a single model
 
 Usage:
-    python scripts/1_extract_single.py --model clip --split train
-    python scripts/1_extract_single.py --model dino --split train
-    python scripts/1_extract_single.py --model mae --split train
-    python scripts/1_extract_single.py --model clip --split test
+    python scripts/1_extract_single.py --model clip --dataset stanford_cars
+    python scripts/1_extract_single.py --model dino --dataset cifar10
+    python scripts/1_extract_single.py --model mae --dataset flowers102
 """
 import argparse
 import os
@@ -29,6 +28,20 @@ def main():
         help="Model type",
     )
     parser.add_argument(
+        "--dataset",
+        type=str,
+        default="stanford_cars",
+        choices=[
+            "stanford_cars",
+            "cifar10",
+            "cifar100",
+            "flowers102",
+            "pets",
+            "food101",
+        ],
+        help="Dataset name",
+    )
+    parser.add_argument(
         "--split",
         type=str,
         default="train",
@@ -39,26 +52,25 @@ def main():
         "--output",
         type=str,
         default=None,
-        help="Output path (default: features/{model}_{split}.pt)",
+        help="Output path (default: features/{dataset}_{model}_{split}.pt)",
     )
 
     args = parser.parse_args()
 
     # Setup
     device = get_device()
-    config = Config()
 
-    print(f"Extracting {args.model} features for {args.split} split...")
+    print(f"Extracting {args.model} features for {args.dataset} ({args.split})")
     print(f"Device: {device}")
 
     # Default output path
     if args.output is None:
-        args.output = os.path.join(config.feature_dir, f"{args.model}_{args.split}.pt")
+        args.output = f"features/{args.dataset}_{args.model}_{args.split}.pt"
 
     ensure_dir(os.path.dirname(args.output))
 
     # Extract
-    extractor = FeatureExtractor(device=device, data_root=config.data_root)
+    extractor = FeatureExtractor(device=device, dataset=args.dataset)
     features = extractor.extract(
         model_types=args.model,
         split=args.split,

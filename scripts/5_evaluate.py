@@ -2,8 +2,8 @@
 Evaluate a trained model
 
 Usage:
-    python scripts/5_evaluate.py --checkpoint outputs/checkpoints/clip_single.pth --model clip
-    python scripts/5_evaluate.py --checkpoint outputs/checkpoints/clip_dino_mae_fusion.pth --models clip dino mae
+    python scripts/5_evaluate.py --checkpoint outputs/checkpoints/cifar10_clip_single.pth --model clip --dataset cifar10
+    python scripts/5_evaluate.py --checkpoint outputs/checkpoints/cifar10_clip_dino_mae_fusion.pth --models clip dino mae --dataset cifar10
 """
 import argparse
 import os
@@ -14,8 +14,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import torch
 from src.training import MultiViewClassifier, SingleViewClassifier, Trainer
 from src.features import FeatureExtractor
+from src.data import DATASET_INFO
 from src.utils import get_device
-from configs.config import Config, MODEL_CONFIGS
+from configs.config import MODEL_CONFIGS
 
 
 def main():
@@ -35,6 +36,27 @@ def main():
         help="Model types (for fusion models)",
     )
     parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        choices=["clip", "dino", "mae"],
+        help="Single model type",
+    )
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        required=True,
+        choices=[
+            "stanford_cars",
+            "cifar10",
+            "cifar100",
+            "flowers102",
+            "pets",
+            "food101",
+        ],
+        help="Dataset name",
+    )
+    parser.add_argument(
         "--feature-dir",
         type=str,
         default="features",
@@ -50,36 +72,48 @@ def main():
 
     # Setup
     device = get_device()
-    config = Config()
+    num_classes = DATASET_INFO[args.dataset]["num_classes"]
 
     print(f"Evaluating: {args.checkpoint}")
+    print(f"Dataset: {args.dataset}, Classes: {num_classes}")
     print(f"Device: {device}")
 
     # Determine model type from checkpoint name if not specified
-    if args.models is None:
+    if args.models is None and args.model is None:
         checkpoint_name = os.path.basename(args.checkpoint)
-        if "single" in checkpoint_name or args.single:
-            # Extract model name from checkpoint
-            for m in ["clip", "dino", "mae"]:
-                if m in checkpoint_name:
-                    args.models = [m]
-                    break
+
+        # Try to extract from checkpoint name
+        found_models = [m for m in ["clip", "dino", "mae"] if m in checkpoint_name]
+
+        if "fusion" in checkpoint_name or len(found_models) > 1:
+            args.models = found_models
+        elif len(found_models) == 1:
+            args.model = found_models[0]
         else:
-            # Fusion model - extract all model names
-            args.models = [m for m in ["clip", "dino", "mae"] if m in checkpoint_name]
+            raise ValueError(
+                "Cannot determine model types from checkpoint name. "
+                "Please specify --model or --models"
+            )
+
+    if args.model:
+        args.models = [args.model]
 
     if args.models is None:
-        raise ValueError("Cannot determine model types from checkpoint name. Please specify --models")
+        raise ValueError("Please specify --model or --models")
 
     print(f"Model types: {args.models}")
 
     # Load test features
-    model_str = "_".join(args.models)
-    test_path = os.path.join(args.feature_dir, f"{model_str}_test.pt")
+    if len(args.models) == 1:
+        test_path = os.path.join(args.feature_dir, f"{args.dataset}_{args.models[0]}_test.pt")
+    else:
+        model_str = "_".join(args.models)
+        test_path = os.path.join(args.feature_dir, f"{args.dataset}_{model_str}_test.pt")
 
     if not os.path.exists(test_path):
-        print(f"Warning: {test_path} not found, trying single model features...")
-        test_path = os.path.join(args.feature_dir, f"{args.models[0]}_test.pt")
+        print(f"Error: Test features not found: {test_path}")
+        print("Please extract features first.")
+        sys.exit(1)
 
     print(f"Loading test features from: {test_path}")
     test_features = FeatureExtractor.load_features(test_path)
@@ -91,13 +125,13 @@ def main():
         feature_dim = MODEL_CONFIGS[args.models[0]]["feature_dim"]
         model = SingleViewClassifier(
             feature_dim=feature_dim,
-            num_classes=config.num_classes,
+            num_classes=num_classes,
         )
     else:
         feature_dims = [MODEL_CONFIGS[m]["feature_dim"] for m in args.models]
         model = MultiViewClassifier(
             feature_dims=feature_dims,
-            num_classes=config.num_classes,
+            num_classes=num_classes,
         )
 
     # Load checkpoint
@@ -116,7 +150,8 @@ def main():
     accuracy = trainer.evaluate(test_loader)
 
     print("\n" + "=" * 50)
-    print(f"Model: {model_str}")
+    print(f"Dataset: {args.dataset}")
+    print(f"Model: {' + '.join(args.models)}")
     print(f"Test Accuracy: {accuracy:.2f}%")
     print("=" * 50)
 

@@ -2,9 +2,8 @@
 Extract features from multiple models
 
 Usage:
-    python scripts/2_extract_multi.py --models clip dino --split train
-    python scripts/2_extract_multi.py --models clip dino mae --split train
-    python scripts/2_extract_multi.py --models clip dino mae --split test
+    python scripts/2_extract_multi.py --models clip dino --dataset stanford_cars
+    python scripts/2_extract_multi.py --models clip dino mae --dataset cifar10
 """
 import argparse
 import os
@@ -14,7 +13,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.features import FeatureExtractor
 from src.utils import get_device, ensure_dir
-from configs.config import Config
 
 
 def main():
@@ -26,6 +24,20 @@ def main():
         required=True,
         choices=["clip", "dino", "mae"],
         help="Model types (space-separated)",
+    )
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default="stanford_cars",
+        choices=[
+            "stanford_cars",
+            "cifar10",
+            "cifar100",
+            "flowers102",
+            "pets",
+            "food101",
+        ],
+        help="Dataset name",
     )
     parser.add_argument(
         "--split",
@@ -45,20 +57,19 @@ def main():
 
     # Setup
     device = get_device()
-    config = Config()
 
     model_str = "_".join(args.models)
-    print(f"Extracting {model_str} features for {args.split} split...")
+    print(f"Extracting {model_str} features for {args.dataset} ({args.split})")
     print(f"Device: {device}")
 
     # Default output path
     if args.output is None:
-        args.output = os.path.join(config.feature_dir, f"{model_str}_{args.split}.pt")
+        args.output = f"features/{args.dataset}_{model_str}_{args.split}.pt"
 
     ensure_dir(os.path.dirname(args.output))
 
     # Extract
-    extractor = FeatureExtractor(device=device, data_root=config.data_root)
+    extractor = FeatureExtractor(device=device, dataset=args.dataset)
     features = extractor.extract(
         model_types=args.models,
         split=args.split,

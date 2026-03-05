@@ -2,9 +2,8 @@
 Train a single model classifier
 
 Usage:
-    python scripts/3_train_single.py --model clip
-    python scripts/3_train_single.py --model dino
-    python scripts/3_train_single.py --model mae
+    python scripts/3_train_single.py --model clip --dataset stanford_cars
+    python scripts/3_train_single.py --model dino --dataset cifar10
 """
 import argparse
 import os
@@ -15,8 +14,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import torch
 from src.training import SingleViewClassifier, Trainer
 from src.features import FeatureExtractor
+from src.data import DATASET_INFO
 from src.utils import get_device, set_seed, print_model_info
-from configs.config import Config, MODEL_CONFIGS
+from configs.config import MODEL_CONFIGS
 
 
 def main():
@@ -27,6 +27,20 @@ def main():
         required=True,
         choices=["clip", "dino", "mae"],
         help="Model type",
+    )
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        required=True,
+        choices=[
+            "stanford_cars",
+            "cifar10",
+            "cifar100",
+            "flowers102",
+            "pets",
+            "food101",
+        ],
+        help="Dataset name",
     )
     parser.add_argument(
         "--feature-dir",
@@ -64,18 +78,28 @@ def main():
     # Setup
     device = get_device()
     set_seed(42)
-    config = Config()
 
-    print(f"Training {args.model.upper()} single model classifier")
-    print(f"Device: {device}")
+    num_classes = DATASET_INFO[args.dataset]["num_classes"]
+    print(f"Training {args.model.upper()} single model on {args.dataset}")
+    print(f"Device: {device}, Classes: {num_classes}")
 
     # Load features
-    train_path = os.path.join(args.feature_dir, f"{args.model}_train.pt")
-    test_path = os.path.join(args.feature_dir, f"{args.model}_test.pt")
+    train_path = os.path.join(args.feature_dir, f"{args.dataset}_{args.model}_train.pt")
+    test_path = os.path.join(args.feature_dir, f"{args.dataset}_{args.model}_test.pt")
 
     print(f"\nLoading features from:")
     print(f"  Train: {train_path}")
     print(f"  Test: {test_path}")
+
+    if not os.path.exists(train_path):
+        print(f"\nError: {train_path} not found!")
+        print(f"Please run: python scripts/1_extract_single.py --model {args.model} --dataset {args.dataset} --split train")
+        sys.exit(1)
+
+    if not os.path.exists(test_path):
+        print(f"\nError: {test_path} not found!")
+        print(f"Please run: python scripts/1_extract_single.py --model {args.model} --dataset {args.dataset} --split test")
+        sys.exit(1)
 
     train_features = FeatureExtractor.load_features(train_path)
     test_features = FeatureExtractor.load_features(test_path)
@@ -84,7 +108,7 @@ def main():
     feature_dim = MODEL_CONFIGS[args.model]["feature_dim"]
     model = SingleViewClassifier(
         feature_dim=feature_dim,
-        num_classes=config.num_classes,
+        num_classes=num_classes,
     )
 
     print_model_info(model)
@@ -94,7 +118,8 @@ def main():
 
     output_path = args.output
     if output_path is None:
-        output_path = os.path.join(config.checkpoint_dir, f"{args.model}_single.pth")
+        os.makedirs("outputs/checkpoints", exist_ok=True)
+        output_path = f"outputs/checkpoints/{args.dataset}_{args.model}_single.pth"
 
     history = trainer.fit(
         train_features=train_features,

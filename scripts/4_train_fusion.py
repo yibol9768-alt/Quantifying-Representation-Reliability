@@ -2,8 +2,8 @@
 Train a multi-view fusion model
 
 Usage:
-    python scripts/4_train_fusion.py --models clip dino
-    python scripts/4_train_fusion.py --models clip dino mae
+    python scripts/4_train_fusion.py --models clip dino --dataset stanford_cars
+    python scripts/4_train_fusion.py --models clip dino mae --dataset cifar10
 """
 import argparse
 import os
@@ -14,8 +14,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import torch
 from src.training import MultiViewClassifier, Trainer
 from src.features import FeatureExtractor
+from src.data import DATASET_INFO
 from src.utils import get_device, set_seed, print_model_info
-from configs.config import Config, MODEL_CONFIGS
+from configs.config import MODEL_CONFIGS
 
 
 def main():
@@ -27,6 +28,20 @@ def main():
         required=True,
         choices=["clip", "dino", "mae"],
         help="Model types to fuse (space-separated)",
+    )
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        required=True,
+        choices=[
+            "stanford_cars",
+            "cifar10",
+            "cifar100",
+            "flowers102",
+            "pets",
+            "food101",
+        ],
+        help="Dataset name",
     )
     parser.add_argument(
         "--feature-dir",
@@ -64,20 +79,29 @@ def main():
     # Setup
     device = get_device()
     set_seed(42)
-    config = Config()
 
+    num_classes = DATASET_INFO[args.dataset]["num_classes"]
     model_str = "_".join(args.models)
-    print(f"Training {model_str.upper()} fusion model")
-    print(f"Device: {device}")
+    print(f"Training {model_str.upper()} fusion model on {args.dataset}")
+    print(f"Device: {device}, Classes: {num_classes}")
 
     # Load features
-    model_str = "_".join(args.models)
-    train_path = os.path.join(args.feature_dir, f"{model_str}_train.pt")
-    test_path = os.path.join(args.feature_dir, f"{model_str}_test.pt")
+    train_path = os.path.join(args.feature_dir, f"{args.dataset}_{model_str}_train.pt")
+    test_path = os.path.join(args.feature_dir, f"{args.dataset}_{model_str}_test.pt")
 
     print(f"\nLoading features from:")
     print(f"  Train: {train_path}")
     print(f"  Test: {test_path}")
+
+    if not os.path.exists(train_path):
+        print(f"\nError: {train_path} not found!")
+        print(f"Please run: python scripts/2_extract_multi.py --models {' '.join(args.models)} --dataset {args.dataset} --split train")
+        sys.exit(1)
+
+    if not os.path.exists(test_path):
+        print(f"\nError: {test_path} not found!")
+        print(f"Please run: python scripts/2_extract_multi.py --models {' '.join(args.models)} --dataset {args.dataset} --split test")
+        sys.exit(1)
 
     train_features = FeatureExtractor.load_features(train_path)
     test_features = FeatureExtractor.load_features(test_path)
@@ -86,9 +110,7 @@ def main():
     feature_dims = [MODEL_CONFIGS[m]["feature_dim"] for m in args.models]
     model = MultiViewClassifier(
         feature_dims=feature_dims,
-        num_classes=config.num_classes,
-        hidden_dims=config.hidden_dims,
-        dropout=config.dropout,
+        num_classes=num_classes,
     )
 
     print_model_info(model)
@@ -99,7 +121,8 @@ def main():
 
     output_path = args.output
     if output_path is None:
-        output_path = os.path.join(config.checkpoint_dir, f"{model_str}_fusion.pth")
+        os.makedirs("outputs/checkpoints", exist_ok=True)
+        output_path = f"outputs/checkpoints/{args.dataset}_{model_str}_fusion.pth"
 
     history = trainer.fit(
         train_features=train_features,
