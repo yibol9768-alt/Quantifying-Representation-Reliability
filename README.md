@@ -8,15 +8,15 @@
 
 ### 细粒度图像分类挑战
 
-细粒度图像分类（Fine-grained Image Classification）是计算机视觉中的一个挑战性任务，其特点是：
+细粒度图像分类（Fine-grained Image Classification）是计算机视觉中的一个挑战性任务：
 
-- **类别数量多**：如 Stanford Cars 数据集包含 196 个汽车品牌/型号类别
+- **类别数量多**：Stanford Cars 包含 196 个汽车品牌/型号
 - **类间差异小**：不同类别之间的视觉差异非常细微
 - **类内差异大**：同一类别内存在姿态、角度、光照等变化
 
 ### 多视图学习思想
 
-单一预训练模型往往只能捕捉到图像的某些特定特征表示。通过融合多个本质不同的模型，可以：
+单一预训练模型往往只能捕捉到图像的某些特定特征。通过融合多个本质不同的模型：
 
 1. **互补性**：不同模型捕捉不同类型的视觉特征
 2. **鲁棒性**：减少对单一模型的依赖
@@ -34,202 +34,172 @@
 
 ---
 
-## 实验设置
-
-### 数据集
-
-- **Stanford Cars Dataset**
-  - 训练集：8,144 张图像
-  - 测试集：8,041 张图像
-  - 类别数：196 个汽车类别
-
-### 项目结构
+## 项目结构
 
 ```
 Quantifying-Representation-Reliability/
-├── CLIP and DINO/                 # 双视图实验 (CLIP + DINO)
-│   ├── extract_features2.py       # 训练集特征提取
-│   ├── extract_test2.py           # 测试集特征提取
-│   ├── model_test2.py             # 模型评估脚本
-│   └── train_baseline2.py         # 训练脚本
-│
-├── CLIP DINO and MAE/             # 三视图实验 (CLIP + DINO + MAE)
-│   ├── extract_features3.py       # 训练集特征提取
-│   ├── extract_test3.py           # 测试集特征提取
-│   ├── model_test3.py             # 模型评估脚本
-│   └── train_baseline3.py         # 训练脚本
-│
+├── src/                        # 源代码
+│   ├── models/                 # 模型封装 (CLIP/DINO/MAE)
+│   │   ├── base.py             # 基类
+│   │   ├── clip_model.py       # CLIP
+│   │   ├── dino_model.py       # DINO
+│   │   └── mae_model.py        # MAE
+│   ├── data/                   # 数据加载
+│   │   └── dataset.py          # Stanford Cars 数据集
+│   ├── features/               # 特征提取
+│   │   └── extractor.py        # 特征提取器
+│   ├── training/               # 训练相关
+│   │   ├── classifier.py       # 分类器
+│   │   └── trainer.py          # 训练器
+│   └── utils/                  # 工具函数
+│       └── common.py
+├── configs/                    # 配置文件
+│   └── config.py
+├── scripts/                    # 运行脚本
+│   ├── 1_extract_single.py     # 单模型特征提取
+│   ├── 2_extract_multi.py      # 多模型特征提取
+│   ├── 3_train_single.py       # 单模型训练
+│   ├── 4_train_fusion.py       # 融合模型训练
+│   └── 5_evaluate.py           # 模型评估
+├── main.py                     # 统一入口
+├── CLAUDE.md                   # 开发规范
 └── README.md
 ```
 
 ---
 
-## 环境配置
+## 快速开始
 
-### 系统要求
-
-- Python >= 3.8
-- CUDA >= 11.0 (推荐使用 GPU)
-- 显存 >= 8GB
-
-### 依赖安装
+### 1. 环境配置
 
 ```bash
 # 创建虚拟环境
 conda create -n multiview python=3.10
 conda activate multiview
 
-# 安装 PyTorch (根据你的 CUDA 版本选择)
+# 安装依赖
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
-
-# 安装其他依赖
-pip install open-clip-torch transformers scipy tqdm pillow
+pip install clip transformers scipy tqdm pillow
 ```
 
-### 依赖包列表
-
-| 包名 | 版本 | 用途 |
-|------|------|------|
-| torch | >= 2.0 | 深度学习框架 |
-| torchvision | >= 0.15 | 图像处理和数据加载 |
-| clip | 1.0 | OpenAI CLIP 模型 |
-| transformers | >= 4.30 | Hugging Face MAE 模型 |
-| scipy | >= 1.10 | 解析 .mat 标注文件 |
-| Pillow | >= 9.0 | 图像读取 |
-| tqdm | >= 4.65 | 进度条显示 |
-
----
-
-## 数据准备
-
-### 1. 下载 Stanford Cars 数据集
+### 2. 数据准备
 
 ```bash
-# 创建数据目录
+# 下载 Stanford Cars 数据集
 mkdir stanford_cars
+cd stanford_cars
 
-# 下载训练集图片 (约 1.7GB)
-wget http://ai.stanford.edu/~jkrause/cars/car_devkit.zip -O stanford_cars/devkit.zip
-wget http://ai.stanford.edu/~jkrause/cars/cars_train.zip -O stanford_cars/cars_train.zip
-wget http://ai.stanford.edu/~jkrause/cars/cars_test.zip -O stanford_cars/cars_test.zip
-
-# 下载测试集标签 (用于评估)
-wget https://folk.ntnu.no/haakohu/NNIFTI/2022/cars_test_annos_withlabels.mat -O stanford_cars/cars_test_annos_withlabels.mat
+# 下载数据
+wget http://ai.stanford.edu/~jkrause/cars/car_devkit.zip
+wget http://ai.stanford.edu/~jkrause/cars/cars_train.zip
+wget http://ai.stanford.edu/~jkrause/cars/cars_test.zip
+wget https://folk.ntnu.no/haakohu/NNIFTI/2022/cars_test_annos_withlabels.mat
 
 # 解压
-cd stanford_cars
-unzip devkit.zip
-unzip cars_train.zip
-unzip cars_test.zip
+unzip car_devkit.zip && unzip cars_train.zip && unzip cars_test.zip
+cd ..
 ```
 
-解压后的目录结构：
-```
-stanford_cars/
-├── cars_train/           # 训练集图片
-├── cars_test/            # 测试集图片
-├── devkit/
-│   ├── cars_train_annos.mat
-│   └── cars_meta.mat
-└── cars_test_annos_withlabels.mat  # 测试集标签
+### 3. 运行实验
+
+```bash
+# 方式一：使用统一入口（推荐）
+# 完整流程：提取特征 + 训练 + 评估
+python main.py --mode full --models clip dino mae
+
+# 方式二：分步执行
+# 步骤1：提取特征
+python scripts/1_extract_single.py --model clip --split train
+python scripts/1_extract_single.py --model dino --split train
+python scripts/1_extract_single.py --model mae --split train
+python scripts/1_extract_single.py --model clip --split test
+python scripts/1_extract_single.py --model dino --split test
+python scripts/1_extract_single.py --model mae --split test
+
+# 步骤2：训练单模型基线
+python scripts/3_train_single.py --model clip
+python scripts/3_train_single.py --model dino
+python scripts/3_train_single.py --model mae
+
+# 步骤3：训练融合模型
+python scripts/4_train_fusion.py --models clip dino mae
+
+# 步骤4：评估
+python scripts/5_evaluate.py --checkpoint outputs/checkpoints/clip_dino_mae_fusion.pth
 ```
 
 ---
 
 ## 使用说明
 
-### 方案一：双视图融合 (CLIP + DINO)
+### 单模型实验
 
-#### 步骤 1：提取训练集特征
+验证每个预训练模型的独立性能：
 
 ```bash
-cd "CLIP and DINO"
-python extract_features2.py
+# 提取 CLIP 特征
+python scripts/1_extract_single.py --model clip --split train
+python scripts/1_extract_single.py --model clip --split test
+
+# 训练 CLIP 分类器
+python scripts/3_train_single.py --model clip
+
+# 评估
+python scripts/5_evaluate.py --checkpoint outputs/checkpoints/clip_single.pth --single
 ```
 
-输出：`multiview_train_features.pt` (约 1.2GB)
-
-#### 步骤 2：训练融合模型
+### 多模型融合实验
 
 ```bash
-python train_baseline2.py
+# 提取多模型特征（一次性）
+python scripts/2_extract_multi.py --models clip dino mae --split train
+python scripts/2_extract_multi.py --models clip dino mae --split test
+
+# 训练融合模型
+python scripts/4_train_fusion.py --models clip dino mae
+
+# 评估
+python scripts/5_evaluate.py --checkpoint outputs/checkpoints/clip_dino_mae_fusion.pth --models clip dino mae
 ```
 
-训练过程（30 epochs）：
-- 自动划分 80% 训练 / 20% 验证
-- 输出每个 epoch 的损失和验证准确率
-- 保存模型权重：`multiview_fusion_mlp.pth`
-
-#### 步骤 3：提取测试集特征
+### 双模型融合
 
 ```bash
-python extract_test2.py
-```
-
-输出：`multiview_test_features.pt`
-
-#### 步骤 4：在测试集上评估
-
-```bash
-python model_test2.py
-```
-
-输出：测试集 Top-1 准确率
-
----
-
-### 方案二：三视图融合 (CLIP + DINO + MAE)
-
-#### 步骤 1：提取训练集特征
-
-```bash
-cd "CLIP DINO and MAE"
-python extract_features3.py
-```
-
-输出：`multiview3_train_features.pt` (约 1.8GB)
-
-#### 步骤 2：训练融合模型
-
-```bash
-python train_baseline3.py
-```
-
-保存模型权重：`multiview3_fusion_mlp.pth`
-
-#### 步骤 3 & 4：测试集评估
-
-```bash
-# 提取测试集特征
-python extract_test3.py
-
-# 评估模型
-python model_test3.py
+# 只使用 CLIP + DINO
+python scripts/2_extract_multi.py --models clip dino --split train
+python scripts/2_extract_multi.py --models clip dino --split test
+python scripts/4_train_fusion.py --models clip dino
 ```
 
 ---
 
 ## 模型架构
 
-### 融合分类器结构
+### 融合策略：早期特征融合
 
 ```
-输入:
-├── CLIP 特征 [Batch, 512]
-├── DINO 特征 [Batch, 768]
-└── MAE 特征 [Batch, 768]  (仅三视图方案)
+输入图像
+    │
+    ├──→ [CLIP] ───→ 512D ──┐
+    │                      │
+    ├──→ [DINO] ───→ 768D ──┼→ [拼接] → [MLP] → 196类
+    │                      │
+    └──→ [MAE] ───→ 768D ──┘
+         (冻结)              (可训练)
+```
 
-特征拼接 → [Batch, 2048]
+### MLP 分类器结构
 
-MLP 分类器:
-├── Linear(2048 → 1024)
-├── BatchNorm1d
-├── ReLU
-├── Dropout(0.5)
-├── Linear(1024 → 512)
-├── ReLU
-├── Dropout(0.3)
-└── Linear(512 → 196)  # 196 个汽车类别
+```
+输入特征 (融合后)
+    ↓
+Linear(2048 → 1024)
+BatchNorm1d + ReLU + Dropout(0.5)
+    ↓
+Linear(1024 → 512)
+ReLU + Dropout(0.3)
+    ↓
+Linear(512 → 196)  # 196个汽车类别
 ```
 
 ### 训练配置
@@ -245,50 +215,51 @@ MLP 分类器:
 
 ---
 
-## 特征提取流程
+## 脚本参数说明
 
-```mermaid
-graph LR
-    A[原始图像] --> B[CLIP预处理]
-    A --> C[DINO预处理]
-    A --> D[MAE预处理]
+### 1_extract_single.py - 单模型特征提取
 
-    B --> E[CLIP Encoder]
-    C --> F[DINO Encoder]
-    D --> G[MAE Encoder]
-
-    E --> H[CLIP特征 512D]
-    F --> I[DINO特征 768D]
-    G --> J[MAE特征 768D]
-
-    H --> K[L2归一化]
-    I --> K
-    J --> K
-
-    K --> L[保存到本地]
+```
+--model    模型类型 (clip/dino/mae)
+--split    数据划分 (train/test)
+--output   输出路径 (可选)
 ```
 
-### 关键步骤说明
+### 2_extract_multi.py - 多模型特征提取
 
-1. **模型加载**：从 Hugging Face / torch.hub 加载预训练权重
-2. **图像预处理**：每个模型有独立的预处理流程
-3. **特征提取**：冻结所有预训练模型的梯度，仅提取特征
-4. **L2 归一化**：对所有特征进行 L2 归一化，确保不同模态特征在同一尺度
-5. **特征保存**：保存为 PyTorch `.pt` 格式，便于后续训练加载
+```
+--models   模型列表 (空格分隔)
+--split    数据划分 (train/test)
+--output   输出路径 (可选)
+```
 
----
+### 3_train_single.py - 单模型训练
 
-## 预期结果
+```
+--model        模型类型
+--feature-dir  特征目录 (默认: features)
+--epochs       训练轮数 (默认: 30)
+--batch-size   批大小 (默认: 256)
+--lr           学习率 (默认: 1e-3)
+```
 
-### 性能对比
+### 4_train_fusion.py - 融合模型训练
 
-| 方案 | 特征维度 | 参数量 | 预期 Top-1 准确率 |
-|------|----------|--------|-------------------|
-| CLIP 单模型 | 512 | ~ | ~ |
-| DINO 单模型 | 768 | ~ | ~ |
-| MAE 单模型 | 768 | ~ | ~ |
-| CLIP + DINO | 1280 | ~ | ~ |
-| CLIP + DINO + MAE | 2048 | ~ | ~ |
+```
+--models       模型列表 (空格分隔)
+--feature-dir  特征目录
+--epochs       训练轮数
+--batch-size   批大小
+--lr           学习率
+```
+
+### 5_evaluate.py - 模型评估
+
+```
+--checkpoint   模型权重路径
+--models       模型列表 (融合模型需要)
+--single       单模型标志
+```
 
 ---
 
@@ -296,46 +267,50 @@ graph LR
 
 ### Q1: 显存不足怎么办？
 
-- 减小 batch size（修改 DataLoader 中的 `batch_size` 参数）
-- 使用 CPU 提取特征（速度较慢但无需显存）
+```bash
+# 减小批大小
+python scripts/4_train_fusion.py --models clip dino mae --batch-size 128
+```
 
 ### Q2: 特征提取很慢？
 
-- 确保使用了 CUDA (`device = "cuda"`)
-- 考虑使用多 GPU 并行处理
+- 确保使用了 CUDA：检查输出中的 `Device: cuda`
+- 考虑分别提取不同模型的特征，然后并行
 
-### Q3: 测试集标签在哪里？
+### Q3: 如何验证数据集是否正确？
 
-测试集标签文件 `cars_test_annos_withlabels.mat` 需要单独下载，已在数据准备部分提供下载链接。
+```bash
+python -c "from src.data import StanfordCarsDataset; ds = StanfordCarsDataset(); print(ds.verify_dataset())"
+```
 
-### Q4: 如何使用自己的数据集？
+### Q4: 输出文件在哪里？
 
-需要修改 `extract_features*.py` 中的数据加载部分：
-- 修改 `image_paths` 列表获取方式
-- 调整 `num_classes` 参数（类别数量）
+```
+features/           # 特征文件
+outputs/            # 训练输出
+└── checkpoints/    # 模型权重
+```
+
+---
+
+## 实验流程建议
+
+1. **单模型基线** - 先运行每个模型的独立实验
+2. **双模型融合** - 尝试 CLIP+DINO、CLIP+MAE、DINO+MAE
+3. **三模型融合** - 使用全部三个模型
+4. **结果对比** - 记录各方案的准确率
 
 ---
 
 ## 参考文献
 
-### 预训练模型相关
-
 - **CLIP**: Radford et al. "Learning Transferable Visual Models From Natural Language Supervision", ICML 2021
 - **DINO**: Caron et al. "Emerging Properties in Self-Supervised Vision Transformers", ICCV 2021
 - **MAE**: He et al. "Masked Autoencoders Are Scalable Vision Learners", CVPR 2022
-
-### 数据集
-
-- **Stanford Cars**: Krause et al. "Collecting and Annotating Fine-Grained Car Dataset", 2013
+- **Stanford Cars**: Krause et al., 2013
 
 ---
 
 ## 许可证
 
 MIT License
-
----
-
-## 联系方式
-
-如有问题或建议，欢迎提交 Issue 或 Pull Request。
