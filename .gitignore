@@ -1,0 +1,49 @@
+# 特征文件
+multiview_train_features.pt
+multiview_test_features.pt
+multiview3_train_features.pt
+multiview3_test_features.pt
+*.pt
+
+# 模型权重
+multiview_fusion_mlp.pth
+multiview3_fusion_mlp.pth
+*.pth
+
+# 数据集
+stanford_cars/
+*.zip
+*.mat
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# 虚拟环境
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 日志文件
+*.log
+
+# 临时文件
+*.tmp
+temp/
