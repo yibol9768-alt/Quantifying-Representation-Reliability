@@ -2,6 +2,7 @@
 MAE model wrapper
 """
 import torch
+import os
 from transformers import ViTMAEModel, AutoImageProcessor
 from typing import Optional
 from PIL import Image
@@ -19,9 +20,11 @@ class MAEModel(BaseModel):
         self.load_model()
 
     def load_model(self):
-        """Load MAE model from Hugging Face"""
-        self.processor = AutoImageProcessor.from_pretrained(self.model_name)
-        self.model = ViTMAEModel.from_pretrained(self.model_name).to(self.device)
+        """Load MAE model from Hugging Face (with mirror for China)"""
+        # Use mirror for faster download in China
+        mirror = os.environ.get("HF_ENDPOINT", "https://hf-mirror.com")
+        self.processor = AutoImageProcessor.from_pretrained(self.model_name, mirror=mirror)
+        self.model = ViTMAEModel.from_pretrained(self.model_name, mirror=mirror).to(self.device)
         self.model.eval()
 
     def get_transform(self):
