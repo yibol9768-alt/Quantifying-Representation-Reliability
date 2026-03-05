@@ -13,7 +13,7 @@ class Config:
     device: str = "cuda"
 
     # Data
-    data_root: str = "data"
+    data_root: str = "/root/autodl-tmp/data"
     dataset: str = "stanford_cars"  # Dataset name
     num_classes: int = 196  # Will be set based on dataset
 
