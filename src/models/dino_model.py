@@ -59,3 +59,26 @@ class DINOModel(BaseModel):
         feature = feature / feature.norm(dim=-1, keepdim=True)
 
         return feature
+
+    def extract_batch_features(self, images: torch.Tensor) -> torch.Tensor:
+        """
+        Extract features from batch of preprocessed images
+
+        Args:
+            images: Batch of preprocessed tensors [batch_size, 3, 224, 224]
+
+        Returns:
+            torch.Tensor: Feature matrix [batch_size, 768]
+        """
+        if images.dim() == 3:
+            images = images.unsqueeze(0)
+
+        images = images.to(self.device)
+
+        with torch.no_grad():
+            features = self.model(images)
+
+        # L2 normalize
+        features = features / features.norm(dim=-1, keepdim=True)
+
+        return features

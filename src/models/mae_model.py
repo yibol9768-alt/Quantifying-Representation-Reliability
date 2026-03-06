@@ -55,3 +55,46 @@ class MAEModel(BaseModel):
         feature = feature / feature.norm(dim=-1, keepdim=True)
 
         return feature
+
+    def extract_batch_features(self, images: torch.Tensor) -> torch.Tensor:
+        """
+        Extract features from batch of preprocessed images
+
+        Args:
+            images: Batch of preprocessed tensors [batch_size, 3, 224, 224]
+
+        Returns:
+            torch.Tensor: Feature matrix [batch_size, 768]
+        """
+        if images.dim() == 3:
+            images = images.unsqueeze(0)
+
+        # Convert tensor back to PIL for processor (MAE processor expects PIL)
+        # This is not ideal but necessary for MAE processor
+        from torchvision import transforms
+        to_pil = transforms.ToPILImage()
+
+        batch_features = []
+        for i in range(images.shape[0]):
+            img_tensor = images[i].cpu()
+            # Denormalize roughly (undo ImageNet normalization)
+            img_tensor = img_tensor * torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+            img_tensor = img_tensor + torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+            img_tensor = torch.clamp(img_tensor, 0, 1)
+            img_pil = to_pil(img_tensor)
+
+            inputs = self.processor(images=img_pil, return_tensors="pt")
+            inputs = {k: v.to(self.device) for k, v in inputs.items()}
+
+            with torch.no_grad():
+                outputs = self.model(**inputs)
+
+            feature = outputs.last_hidden_state[:, 0, :]
+            batch_features.append(feature)
+
+        features = torch.cat(batch_features, dim=0)
+
+        # L2 normalize
+        features = features / features.norm(dim=-1, keepdim=True)
+
+        return features
