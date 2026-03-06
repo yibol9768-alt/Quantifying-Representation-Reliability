@@ -10,6 +10,7 @@ from .dino_model import DINOModel
 from .mae_model import MAEModel
 from .clip_multilayer import CLIPMultiLayerModel, LLNLayerscale
 from .dino_multilayer import DINOMultiLayerModel
+from .mae_multilayer import MAEMultiLayerModel
 
 __all__ = [
     "BaseModel",
@@ -18,6 +19,7 @@ __all__ = [
     "MAEModel",
     "CLIPMultiLayerModel",
     "DINOMultiLayerModel",
+    "MAEMultiLayerModel",
     "LLNLayerscale",
 ]
 
@@ -55,6 +57,13 @@ MULTILAYER_MODEL_CONFIGS = {
         "hidden_dim": 768,
         "output_dim": 768,
         "layers_to_extract": list(range(6, 12)),  # Deep layers (6-11)
+    },
+    "mae_multilayer": {
+        "class": MAEMultiLayerModel,
+        "num_layers": 12,  # ViT-Base has 12 layers
+        "hidden_dim": 768,
+        "output_dim": 768,
+        "layers_to_extract": list(range(6, 12)),  # Deep layers (6-11), same as DINO
     },
 }
 

@@ -11,9 +11,13 @@ multiview3_fusion_mlp.pth
 *.pth
 
 # 数据集
+data/
 stanford_cars/
 *.zip
 *.mat
+
+# 日志目录
+logs/
 
 # Python 缓存
 __pycache__/

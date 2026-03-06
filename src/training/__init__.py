@@ -10,6 +10,10 @@ from .comm_fusion import (
     WeightedSumFusionClassifier,
     LLNLayerscaleFusion,
 )
+from .comm3_fusion import (
+    COMM3FusionClassifier,
+    AlignmentMLP,
+)
 
 __all__ = [
     "MultiViewClassifier",
@@ -20,4 +24,6 @@ __all__ = [
     "ConcatFusionClassifier",
     "WeightedSumFusionClassifier",
     "LLNLayerscaleFusion",
+    "COMM3FusionClassifier",
+    "AlignmentMLP",
 ]
