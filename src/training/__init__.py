@@ -14,6 +14,12 @@ from .comm3_fusion import (
     COMM3FusionClassifier,
     AlignmentMLP,
 )
+from .mmvit_fusion import (
+    MMViTFusionClassifier,
+    MMViTLiteFusionClassifier,
+    MultiViewCrossAttention,
+    MultiscaleFusionBlock,
+)
 
 __all__ = [
     "MultiViewClassifier",
@@ -26,4 +32,8 @@ __all__ = [
     "LLNLayerscaleFusion",
     "COMM3FusionClassifier",
     "AlignmentMLP",
+    "MMViTFusionClassifier",
+    "MMViTLiteFusionClassifier",
+    "MultiViewCrossAttention",
+    "MultiscaleFusionBlock",
 ]
