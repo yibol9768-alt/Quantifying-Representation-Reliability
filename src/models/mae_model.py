@@ -25,9 +25,8 @@ class MAEModel(BaseModel):
         mirror = os.environ.get("HF_ENDPOINT", "https://hf-mirror.com")
         os.environ["HF_ENDPOINT"] = mirror
 
-        # 使用环境变量方式设置镜像
+        # Set mirror via environment variable
         import transformers
-        # 设置 endpoints
         if hasattr(transformers, 'file_utils'):
             transformers.file_utils.HF_HUB_OFFLINE = False
 
@@ -41,7 +40,7 @@ class MAEModel(BaseModel):
 
     def extract_feature(self, image: Image.Image) -> torch.Tensor:
         """
-        Extract feature from image using MAE
+        Extract feature from image using MAE.
 
         Args:
             image: PIL Image

@@ -1,7 +1,7 @@
 """
-预训练视觉模型封装模块
+Pre-trained vision model wrappers
 
-支持: CLIP, DINO, MAE
+Supports: CLIP, DINO, MAE
 """
 
 from .base import BaseModel
@@ -16,7 +16,7 @@ __all__ = [
     "MAEModel",
 ]
 
-# 模型配置
+# Model configurations
 MODEL_CONFIGS = {
     "clip": {
         "class": CLIPModel,
@@ -35,8 +35,9 @@ MODEL_CONFIGS = {
     },
 }
 
+
 def get_model(model_type: str, device: str = "cuda"):
-    """根据模型类型获取模型实例"""
+    """Get model instance by type"""
     if model_type not in MODEL_CONFIGS:
         raise ValueError(f"Unknown model type: {model_type}. Available: {list(MODEL_CONFIGS.keys())}")
     config = MODEL_CONFIGS[model_type]
