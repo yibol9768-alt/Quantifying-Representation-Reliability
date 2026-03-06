@@ -5,7 +5,7 @@ Training module
 from .classifier import MultiViewClassifier, SingleViewClassifier
 from .trainer import Trainer, FeatureDataset
 from .comm_fusion import (
-    COMMClassifier,
+    COMMFusionClassifier,
     ConcatFusionClassifier,
     WeightedSumFusionClassifier,
     LLNLayerscaleFusion,
@@ -20,7 +20,7 @@ __all__ = [
     "SingleViewClassifier",
     "Trainer",
     "FeatureDataset",
-    "COMMClassifier",
+    "COMMFusionClassifier",
     "ConcatFusionClassifier",
     "WeightedSumFusionClassifier",
     "LLNLayerscaleFusion",
