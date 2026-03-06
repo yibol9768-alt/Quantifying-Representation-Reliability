@@ -22,8 +22,9 @@ def extract_single(args):
     """Extract single model features with batching"""
     from src.models import get_model
     from src.data import get_dataset
-    
-    dataset = get_dataset(args.dataset, "data")
+
+    data_root = os.environ.get("DATA_ROOT", "/root/autodl-tmp/data")
+    dataset = get_dataset(args.dataset, data_root)
     image_paths, labels = dataset.load_train_data() if args.split == "train" else dataset.load_test_data()
     
     print(f"Extracting {args.model.upper()} features for {args.dataset} ({args.split})")
@@ -54,8 +55,9 @@ def extract_multi(args):
     """Extract multi-model features with batching"""
     from src.models import get_model
     from src.data import get_dataset
-    
-    dataset = get_dataset(args.dataset, "data")
+
+    data_root = os.environ.get("DATA_ROOT", "/root/autodl-tmp/data")
+    dataset = get_dataset(args.dataset, data_root)
     image_paths, labels = dataset.load_train_data() if args.split == "train" else dataset.load_test_data()
     
     print(f"Extracting {'+'.join(args.models).upper()} features for {args.dataset} ({args.split})")
@@ -141,8 +143,9 @@ def extract_comm3(args):
     """Extract COMM3 multi-layer features with batching"""
     from src.models import CLIPMultiLayerModel, DINOMultiLayerModel, MAEMultiLayerModel
     from src.data import get_dataset
-    
-    dataset = get_dataset(args.dataset, "data")
+
+    data_root = os.environ.get("DATA_ROOT", "/root/autodl-tmp/data")
+    dataset = get_dataset(args.dataset, data_root)
     image_paths, labels = dataset.load_train_data() if args.split == "train" else dataset.load_test_data()
     
     print(f"Extracting COMM3 multi-layer features for {args.dataset} ({args.split})")

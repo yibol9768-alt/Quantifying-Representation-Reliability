@@ -16,6 +16,77 @@ python scripts/extract.py --model clip --dataset cifar10 --split test
 python scripts/train.py --model clip --dataset cifar10
 ```
 
+## 一键运行所有实验
+
+我们提供了自动化脚本，可以自动运行所有融合方法的实验。
+
+### 方法 1: 使用 Shell 脚本（推荐）
+
+```bash
+# 设置环境变量
+export DATA_ROOT="/root/autodl-tmp/data"
+export HF_ENDPOINT="https://hf-mirror.com"
+
+# 运行 CIFAR-10 的所有实验
+bash scripts/run_cifar10_experiments.sh
+
+# 实验包括：
+# - 3 个单模型基线 (CLIP, DINO, MAE)
+# - 5 个双模型融合 (CLIP+DINO with concat, weighted_sum, mmvit, mmvit_lite, comm)
+# - 4 个三模型融合 (CLIP+DINO+MAE with concat, weighted_sum, mmvit, comm3)
+```
+
+### 方法 2: 手动运行完整流程
+
+```bash
+# Step 1: 提取单模型特征
+for model in clip dino mae; do
+    python scripts/extract.py --model $model --dataset cifar10 --split train --output-dir features
+    python scripts/extract.py --model $model --dataset cifar10 --split test --output-dir features
+done
+
+# Step 2: 提取融合特征
+python scripts/extract.py --models clip dino --dataset cifar10 --split train --output-dir features
+python scripts/extract.py --models clip dino --dataset cifar10 --split test --output-dir features
+python scripts/extract.py --models clip dino mae --dataset cifar10 --split train --output-dir features
+python scripts/extract.py --models clip dino mae --dataset cifar10 --split test --output-dir features
+
+# Step 3: 提取 COMM 多层特征
+python scripts/extract.py --method comm --dataset cifar10 --split train --output-dir features
+python scripts/extract.py --method comm --dataset cifar10 --split test --output-dir features
+python scripts/extract.py --method comm3 --dataset cifar10 --split train --output-dir features
+python scripts/extract.py --method comm3 --dataset cifar10 --split test --output-dir features
+
+# Step 4: 训练单模型
+for model in clip dino mae; do
+    python scripts/train.py --model $model --dataset cifar10 --epochs 30 --batch-size 256 --feature-dir features
+done
+
+# Step 5: 训练双模型
+for method in concat weighted_sum mmvit mmvit_lite comm; do
+    python scripts/train.py --models clip dino --dataset cifar10 --method $method --epochs 30 --batch-size 256 --feature-dir features
+done
+
+# Step 6: 训练三模型
+for method in concat weighted_sum mmvit comm3; do
+    python scripts/train.py --models clip dino mae --dataset cifar10 --method $method --epochs 30 --batch-size 256 --feature-dir features
+done
+```
+
+### 后台运行
+
+```bash
+# 使用 tmux 在后台运行（推荐）
+tmux new-session -d -s experiments
+tmux send-keys -t experiments "bash scripts/run_cifar10_experiments.sh 2>&1 | tee experiment.log" Enter
+
+# 查看进度
+tmux attach -t experiments
+
+# 或者查看日志
+tail -f experiment.log
+```
+
 ## 融合方法
 
 ### 双模型 (CLIP + DINO)
