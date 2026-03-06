@@ -1,39 +1,47 @@
 """
-Training module
+Training module - Unified fusion classifiers
 """
 
-from .classifier import MultiViewClassifier, SingleViewClassifier
-from .trainer import Trainer, FeatureDataset
-from .comm_fusion import (
-    COMMFusionClassifier,
-    ConcatFusionClassifier,
-    WeightedSumFusionClassifier,
+from .fusion import (
+    # Factory
+    create_fusion_model,
+    # Main classes
+    ConcatFusion,
+    WeightedSumFusion,
+    COMMFusion,
+    MMViTFusion,
+    MMViTLiteFusion,
+    MMViTCrossAttentionBlock,
+    # Components
     LLNLayerscaleFusion,
-)
-from .comm3_fusion import (
-    COMM3FusionClassifier,
     AlignmentMLP,
-)
-from .mmvit_fusion import (
+    # Backward compatibility
+    MultiViewClassifier,
+    SingleViewClassifier,
+    COMMFusionClassifier,
+    COMM3FusionClassifier,
     MMViTFusionClassifier,
     MMViTLiteFusionClassifier,
-    MultiViewCrossAttention,
-    MultiscaleFusionBlock,
 )
 
+from .trainer import Trainer, FeatureDataset
+
 __all__ = [
-    "MultiViewClassifier",
-    "SingleViewClassifier",
+    "create_fusion_model",
+    "ConcatFusion",
+    "WeightedSumFusion",
+    "COMMFusion",
+    "MMViTFusion",
+    "MMViTLiteFusion",
+    "MMViTCrossAttentionBlock",
+    "LLNLayerscaleFusion",
+    "AlignmentMLP",
     "Trainer",
     "FeatureDataset",
+    "MultiViewClassifier",
+    "SingleViewClassifier",
     "COMMFusionClassifier",
-    "ConcatFusionClassifier",
-    "WeightedSumFusionClassifier",
-    "LLNLayerscaleFusion",
     "COMM3FusionClassifier",
-    "AlignmentMLP",
     "MMViTFusionClassifier",
     "MMViTLiteFusionClassifier",
-    "MultiViewCrossAttention",
-    "MultiscaleFusionBlock",
 ]
