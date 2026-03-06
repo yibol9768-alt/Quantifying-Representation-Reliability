@@ -92,11 +92,28 @@ python main.py --mode full --dataset cifar10 --models clip
 ### 多模型融合
 
 ```bash
-# CLIP + DINO 融合
+# CLIP + DINO 融合（默认拼接）
 python main.py --mode full --dataset cifar10 --models clip dino
+
+# 使用加权融合方法
+python main.py --mode full --dataset cifar10 --models clip dino --method weighted_sum
 
 # 三模型融合
 python main.py --mode full --dataset cifar10 --models clip dino mae
+```
+
+### COMM 多层次融合（论文方法）
+
+```bash
+# 第一步：提取多层次特征
+python scripts/2_extract_comm.py --dataset cifar10 --split train
+python scripts/2_extract_comm.py --dataset cifar10 --split test
+
+# 第二步：训练 COMM 融合模型
+python scripts/4_train_comm.py --dataset cifar10 --method comm
+
+# 使用简单拼接作为对比
+python scripts/4_train_comm.py --dataset cifar10 --method concat
 ```
 
 ### 在其他数据集上运行
@@ -121,13 +138,27 @@ done
 ```
 Quantifying-Representation-Reliability/
 ├── src/                        # 源代码
-│   ├── models/                 # 模型封装 (CLIP/DINO/MAE)
+│   ├── models/                 # 模型封装
+│   │   ├── clip_model.py       # CLIP 单层特征
+│   │   ├── clip_multilayer.py  # CLIP 多层特征 (COMM)
+│   │   ├── dino_model.py       # DINO 单层特征
+│   │   ├── dino_multilayer.py  # DINO 多层特征 (COMM)
+│   │   └── mae_model.py        # MAE 单层特征
 │   ├── data/                   # 多数据集加载
 │   ├── features/               # 特征提取
 │   ├── training/               # 训练相关
+│   │   ├── classifier.py       # 基础分类器 (Concat/Weighted)
+│   │   └── comm_fusion.py      # COMM 融合分类器
 │   └── utils/                  # 工具函数
 ├── configs/                    # 配置文件
-├── scripts/                    # 运行脚本 (1-5 按步骤编号)
+├── scripts/                    # 运行脚本
+│   ├── 1_extract_single.py     # 单模型特征提取
+│   ├── 2_extract_multi.py      # 多模型特征提取
+│   ├── 2_extract_comm.py       # COMM 多层特征提取
+│   ├── 3_train_single.py       # 单模型训练
+│   ├── 4_train_fusion.py       # 多模型融合训练 (Concat/Weighted)
+│   ├── 4_train_comm.py         # COMM 融合训练
+│   └── 5_evaluate.py           # 模型评估
 ├── main.py                     # 统一入口
 ├── setup_env.sh                # 环境安装脚本
 ├── CLAUDE.md                   # 开发规范
@@ -138,7 +169,9 @@ Quantifying-Representation-Reliability/
 
 ## 模型架构
 
-### 融合策略：早期特征融合
+### 融合策略
+
+#### 方法一：简单拼接融合（Concatenation）
 
 ```
 输入图像
@@ -150,6 +183,45 @@ Quantifying-Representation-Reliability/
     └──→ [MAE] ───→ 768D ──┘
          (冻结)              (可训练)
 ```
+
+#### 方法二：加权融合（Weighted Sum）
+
+```
+输入图像
+    │
+    ├──→ [CLIP] ───→ 512D ──→ [投影] ──┐
+    │              (冻结)      (可学习) │
+    │                                    ├──→ [加权求和] → [MLP] → N类
+    ├──→ [DINO] ───→ 768D ──→ [投影] ──┤
+                   (冻结)      (可学习) │
+    │                                    │
+    └──→ [MAE] ───→ 768D ──→ [投影] ──┘
+                   (冻结)      (可学习)
+```
+
+#### 方法三：COMM 多层次融合（论文方法）
+
+基于论文 [From CLIP to DINO](https://arxiv.org/abs/2310.08825) 的 COMM 融合策略：
+
+```
+输入图像
+    │
+    ├──→ [CLIP 多层] ─→ [L1...L12] ─→ [LLN-Layerscale] ─→ v̄₁ ─┐
+    │                                                        │
+    └──→ [DINO 多层] ─→ [L7...L12] ─→ [LLN-Layerscale] ─→ MLP ─┼→ [拼接] → [Linear] → N类
+                                                             │
+                                         (冻结)               (可训练)
+```
+
+**COMM 融合核心公式**：
+- CLIP 多层融合：`v̄₁ = Σᵢ αᵢ · Linear(LN(v₁ⁱ))`  （i = 1..12）
+- DINO 多层融合：`v̄₂ = Σⱼ βⱼ · Linear(LN(v₂ʲ))`  （j = 7..12）
+- 最终融合：`v̄ = [v̄₁, MLP(v̄₂)]`
+
+**COMM 方法优势**：
+1. 利用 CLIP 浅层特征的细粒度信息
+2. 利用 DINO 深层特征的语义信息
+3. 可学习的层权重自动平衡不同层的贡献
 
 ### 训练配置
 
@@ -234,6 +306,7 @@ python scripts/4_train_fusion.py --models clip dino --dataset cifar10 --batch-si
 - **DINO**: Caron et al., ICCV 2021
 - **MAE**: He et al., CVPR 2022
 - **Stanford Cars**: Krause et al., 2013
+- **COMM**: Jiang et al., ECCV 2024 - [From CLIP to DINO: Visual Encoders Shout in Multi-modal Large Language Models](https://arxiv.org/abs/2310.08825)
 
 ---
 

@@ -4,6 +4,11 @@ Train a multi-view fusion model
 Usage:
     python scripts/4_train_fusion.py --models clip dino --dataset stanford_cars
     python scripts/4_train_fusion.py --models clip dino mae --dataset cifar10
+    python scripts/4_train_fusion.py --models clip dino --dataset stanford_cars --method weighted_sum
+
+Fusion methods:
+    - concat: Simple concatenation (default, same as before)
+    - weighted_sum: Learnable weighted sum fusion
 """
 import argparse
 import os
@@ -12,7 +17,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import torch
-from src.training import MultiViewClassifier, Trainer
+from src.training import MultiViewClassifier, Trainer, WeightedSumFusionClassifier
 from src.features import FeatureExtractor
 from src.data import DATASET_INFO
 from src.utils import get_device, set_seed, print_model_info
@@ -42,6 +47,13 @@ def main():
             "food101",
         ],
         help="Dataset name",
+    )
+    parser.add_argument(
+        "--method",
+        type=str,
+        default="concat",
+        choices=["concat", "weighted_sum"],
+        help="Fusion method: concat (simple concatenation) or weighted_sum (learnable weights)",
     )
     parser.add_argument(
         "--feature-dir",
@@ -83,6 +95,7 @@ def main():
     num_classes = DATASET_INFO[args.dataset]["num_classes"]
     model_str = "_".join(args.models)
     print(f"Training {model_str.upper()} fusion model on {args.dataset}")
+    print(f"Fusion method: {args.method}")
     print(f"Device: {device}, Classes: {num_classes}")
 
     # Load features
@@ -106,15 +119,27 @@ def main():
     train_features = FeatureExtractor.load_features(train_path)
     test_features = FeatureExtractor.load_features(test_path)
 
-    # Build model
+    # Build model based on fusion method
     feature_dims = [MODEL_CONFIGS[m]["feature_dim"] for m in args.models]
-    model = MultiViewClassifier(
-        feature_dims=feature_dims,
-        num_classes=num_classes,
-    )
+
+    if args.method == "concat":
+        # Original concatenation method
+        model = MultiViewClassifier(
+            feature_dims=feature_dims,
+            num_classes=num_classes,
+        )
+        print(f"Input feature dim: {sum(feature_dims)} ({args.models})")
+
+    elif args.method == "weighted_sum":
+        # Learnable weighted sum fusion
+        model = WeightedSumFusionClassifier(
+            feature_dims=feature_dims,
+            num_classes=num_classes,
+            fusion_dim=512,  # Project all to same dimension
+        )
+        print(f"Using weighted sum fusion with projection dim 512")
 
     print_model_info(model)
-    print(f"Input feature dim: {sum(feature_dims)} ({args.models})")
 
     # Train
     trainer = Trainer(model, device=device, lr=args.lr, weight_decay=1e-4)
@@ -122,7 +147,7 @@ def main():
     output_path = args.output
     if output_path is None:
         os.makedirs("outputs/checkpoints", exist_ok=True)
-        output_path = f"outputs/checkpoints/{args.dataset}_{model_str}_fusion.pth"
+        output_path = f"outputs/checkpoints/{args.dataset}_{model_str}_{args.method}_fusion.pth"
 
     history = trainer.fit(
         train_features=train_features,

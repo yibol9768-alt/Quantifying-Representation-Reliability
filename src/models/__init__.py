@@ -1,22 +1,27 @@
 """
-预训练视觉模型封装模块
+Pre-trained visual model wrappers
 
-支持: CLIP, DINO, MAE
+Support: CLIP, DINO, MAE, and multi-layer variants for COMM fusion
 """
 
 from .base import BaseModel
 from .clip_model import CLIPModel
 from .dino_model import DINOModel
 from .mae_model import MAEModel
+from .clip_multilayer import CLIPMultiLayerModel, LLNLayerscale
+from .dino_multilayer import DINOMultiLayerModel
 
 __all__ = [
     "BaseModel",
     "CLIPModel",
     "DINOModel",
     "MAEModel",
+    "CLIPMultiLayerModel",
+    "DINOMultiLayerModel",
+    "LLNLayerscale",
 ]
 
-# 模型配置
+# Model configurations
 MODEL_CONFIGS = {
     "clip": {
         "class": CLIPModel,
@@ -35,9 +40,36 @@ MODEL_CONFIGS = {
     },
 }
 
+# Multi-layer model configurations for COMM fusion
+MULTILAYER_MODEL_CONFIGS = {
+    "clip_multilayer": {
+        "class": CLIPMultiLayerModel,
+        "num_layers": 12,  # ViT-B has 12 layers
+        "hidden_dim": 768,
+        "output_dim": 512,
+        "layers_to_extract": list(range(12)),  # All layers
+    },
+    "dino_multilayer": {
+        "class": DINOMultiLayerModel,
+        "num_layers": 12,  # ViT-B has 12 layers
+        "hidden_dim": 768,
+        "output_dim": 768,
+        "layers_to_extract": list(range(6, 12)),  # Deep layers (6-11)
+    },
+}
+
+
 def get_model(model_type: str, device: str = "cuda"):
-    """根据模型类型获取模型实例"""
+    """Get model instance by type"""
     if model_type not in MODEL_CONFIGS:
         raise ValueError(f"Unknown model type: {model_type}. Available: {list(MODEL_CONFIGS.keys())}")
     config = MODEL_CONFIGS[model_type]
+    return config["class"](device=device)
+
+
+def get_multilayer_model(model_type: str, device: str = "cuda"):
+    """Get multi-layer model instance by type"""
+    if model_type not in MULTILAYER_MODEL_CONFIGS:
+        raise ValueError(f"Unknown multi-layer model type: {model_type}. Available: {list(MULTILAYER_MODEL_CONFIGS.keys())}")
+    config = MULTILAYER_MODEL_CONFIGS[model_type]
     return config["class"](device=device)
