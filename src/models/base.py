@@ -1,5 +1,5 @@
 """
-模型基类
+Base model class for pre-trained vision models
 """
 from abc import ABC, abstractmethod
 from typing import Optional
@@ -7,7 +7,7 @@ import torch
 
 
 class BaseModel(ABC):
-    """预训练模型基类"""
+    """Base class for pre-trained vision models"""
 
     def __init__(self, device: str = "cuda"):
         self.device = device
@@ -18,50 +18,50 @@ class BaseModel(ABC):
 
     @abstractmethod
     def load_model(self):
-        """加载预训练模型"""
+        """Load pre-trained model"""
         pass
 
     @abstractmethod
     def get_transform(self):
-        """获取图像预处理变换"""
+        """Get image preprocessing transform"""
         pass
 
     @abstractmethod
     def extract_feature(self, image) -> torch.Tensor:
         """
-        从图像提取特征
+        Extract feature from image.
 
         Args:
-            image: PIL Image 或预处理后的 tensor
+            image: PIL Image or preprocessed tensor
 
         Returns:
-            torch.Tensor: 归一化后的特征向量 [1, feature_dim]
+            torch.Tensor: Normalized feature vector [1, feature_dim]
         """
         pass
 
     def extract_batch_features(self, images) -> torch.Tensor:
         """
-        批量提取特征
+        Extract features from a batch of images.
 
         Args:
-            images: 图像批次
+            images: Batch of images
 
         Returns:
-            torch.Tensor: 特征矩阵 [batch_size, feature_dim]
+            torch.Tensor: Feature matrix [batch_size, feature_dim]
         """
         features = self.extract_feature(images)
         return self._normalize(features)
 
     def _normalize(self, features: torch.Tensor) -> torch.Tensor:
-        """L2 归一化"""
+        """L2 normalize features"""
         return features / features.norm(dim=-1, keepdim=True)
 
     def to_device(self, tensor):
-        """将张量移动到指定设备"""
+        """Move tensor to device"""
         return tensor.to(self.device)
 
     def eval(self):
-        """设置为评估模式"""
+        """Set model to evaluation mode"""
         if self.model is not None:
             self.model.eval()
 
