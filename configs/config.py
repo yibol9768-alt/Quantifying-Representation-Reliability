@@ -18,7 +18,7 @@ class Config:
     num_classes: int = 196  # Will be set based on dataset
 
     # Feature extraction
-    feature_dir: str = "features"
+    feature_dir: str = "/root/autodl-tmp/features"
     models_to_use: List[str] = field(default_factory=lambda: ["clip", "dino", "mae"])
 
     # Training
@@ -33,8 +33,8 @@ class Config:
     dropout: List[float] = field(default_factory=lambda: [0.5, 0.3])
 
     # Output
-    output_dir: str = "outputs"
-    checkpoint_dir: str = "outputs/checkpoints"
+    output_dir: str = "/root/autodl-tmp/outputs"
+    checkpoint_dir: str = "/root/autodl-tmp/outputs/checkpoints"
 
     # Reproducibility
     seed: int = 42
