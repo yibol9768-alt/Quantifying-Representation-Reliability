@@ -147,23 +147,56 @@ Closes #1
      - Git 提交信息
      - 配置文件
 
-2. **系统代理配置** (国内网络加速)
+2. **系统代理配置** ⚠️ (国内网络必需)
 
-   在 AutoDL 等国内服务器上运行时，需要配置镜像加速：
+   **下载文件时必须使用代理！**
+
+   ### 快速启动代理
+
+   项目已配置好 Shadowsocks 代理，使用以下命令启动：
+
+   ```bash
+   # 方法一：使用项目脚本（推荐）
+   source scripts/start_proxy.sh
+
+   # 方法二：手动启动
+   /tmp/sslocal -s UD2RdK31TK6zLVZikR.xf9pzeslxw.sbs:16001 \
+     -k cb1d3163-2bbd-4e13-83b5-19bc75647cb1 \
+     -m aes-256-gcm -b 127.0.0.1:1081 --protocol http &
+   export http_proxy=http://127.0.0.1:1081
+   export https_proxy=http://127.0.0.1:1081
+   ```
+
+   ### 验证代理
+
+   ```bash
+   # 测试连接
+   curl -x http://127.0.0.1:1081 -s -o /dev/null -w "Google: %{http_code}\n" https://www.google.com
+   curl -x http://127.0.0.1:1081 -s -o /dev/null -w "GitHub: %{http_code}\n" https://github.com
+   ```
+
+   ### 使用代理下载
+
+   ```bash
+   # 启动代理后，直接使用 wget/curl
+   wget https://example.com/file.zip
+   curl -O https://example.com/file.zip
+
+   # Python requests 会自动读取环境变量
+   python download_script.py
+   ```
+
+   ### 其他镜像加速
 
    ```bash
    # HuggingFace 镜像 (已集成到代码中)
    export HF_ENDPOINT=https://hf-mirror.com
 
-   # GitHub 加速 (如需从 GitHub 下载模型)
-   export GITHUB=https://github.com.cn
-
    # PyPI 镜像
    export PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 
-   # 如果有 HTTP/HTTPS 代理，设置：
-   # export http_proxy=http://proxy.example.com:port
-   # export https_proxy=http://proxy.example.com:port
+   # GitHub 学术加速 (AutoDL)
+   source /etc/network_turbo
    ```
 
 3. **不要提交大数据文件**

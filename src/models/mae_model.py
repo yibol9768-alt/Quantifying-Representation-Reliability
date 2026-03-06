@@ -23,8 +23,16 @@ class MAEModel(BaseModel):
         """Load MAE model from Hugging Face (with mirror for China)"""
         # Use mirror for faster download in China
         mirror = os.environ.get("HF_ENDPOINT", "https://hf-mirror.com")
-        self.processor = AutoImageProcessor.from_pretrained(self.model_name, mirror=mirror)
-        self.model = ViTMAEModel.from_pretrained(self.model_name, mirror=mirror).to(self.device)
+        os.environ["HF_ENDPOINT"] = mirror
+
+        # 使用环境变量方式设置镜像
+        import transformers
+        # 设置 endpoints
+        if hasattr(transformers, 'file_utils'):
+            transformers.file_utils.HF_HUB_OFFLINE = False
+
+        self.processor = AutoImageProcessor.from_pretrained(self.model_name)
+        self.model = ViTMAEModel.from_pretrained(self.model_name).to(self.device)
         self.model.eval()
 
     def get_transform(self):
