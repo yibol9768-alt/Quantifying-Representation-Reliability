@@ -25,9 +25,14 @@ class FeatureDataset(Dataset):
         self.labels = None
 
         # Get all feature keys (exclude 'labels')
-        feature_keys = [k for k in features_dict.keys() if k.endswith('_features')]
+        if "feature_order" in features_dict:
+            feature_keys = [k for k in features_dict["feature_order"] if k in features_dict]
+        else:
+            feature_keys = sorted([k for k in features_dict.keys() if k.endswith('_features')])
+            if not feature_keys and "features" in features_dict:
+                feature_keys = ["features"]
 
-        for key in sorted(feature_keys):
+        for key in feature_keys:
             self.features.append(features_dict[key])
 
         if 'labels' in features_dict:

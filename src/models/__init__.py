@@ -8,12 +8,20 @@ from .base import BaseModel
 from .clip_model import CLIPModel
 from .dino_model import DINOModel
 from .mae_model import MAEModel
+from .multilayer_models import (
+    CLIPMultiLayerModel,
+    DINOMultiLayerModel,
+    MAEMultiLayerModel,
+)
 
 __all__ = [
     "BaseModel",
     "CLIPModel",
     "DINOModel",
     "MAEModel",
+    "CLIPMultiLayerModel",
+    "DINOMultiLayerModel",
+    "MAEMultiLayerModel",
 ]
 
 # Model configurations

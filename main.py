@@ -48,39 +48,65 @@ def main():
     parser.add_argument("--epochs", type=int, default=30, help="Training epochs")
     parser.add_argument("--batch-size", type=int, default=256, help="Batch size")
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
+    parser.add_argument(
+        "--backend",
+        type=str,
+        default="auto",
+        choices=["auto", "cpu", "dali"],
+        help="Feature extraction backend",
+    )
+    parser.add_argument(
+        "--method",
+        type=str,
+        default="concat",
+        choices=["concat", "mmvit", "mmvit3", "comm", "comm3"],
+        help="Fusion method for multi-model training",
+    )
     
     args = parser.parse_args()
+
+    method_requirements = {
+        "comm": ["clip", "dino"],
+        "mmvit": ["clip", "dino"],
+        "comm3": ["clip", "dino", "mae"],
+        "mmvit3": ["clip", "dino", "mae"],
+    }
+    if args.method in method_requirements and args.models != method_requirements[args.method]:
+        required = " ".join(method_requirements[args.method])
+        print(f"Error: --method {args.method} requires --models {required}")
+        sys.exit(1)
     
     model_str = "_".join(args.models)
     
     if args.mode in ["extract", "full"]:
-        # Extract train features
-        run_cmd(
-            ["python", "scripts/extract.py", "--models"] + args.models + 
-            ["--dataset", args.dataset, "--split", "train"],
-            f"Extracting features (train)"
-        )
-        # Extract test features
-        run_cmd(
-            ["python", "scripts/extract.py", "--models"] + args.models + 
-            ["--dataset", args.dataset, "--split", "test"],
-            f"Extracting features (test)"
-        )
+        if args.method in {"comm", "comm3", "mmvit", "mmvit3"} and len(args.models) > 1:
+            train_cmd = ["python", "scripts/extract.py", "--method", args.method, "--dataset", args.dataset, "--split", "train", "--backend", args.backend]
+            test_cmd = ["python", "scripts/extract.py", "--method", args.method, "--dataset", args.dataset, "--split", "test", "--backend", args.backend]
+        elif len(args.models) == 1:
+            train_cmd = ["python", "scripts/extract.py", "--model", args.models[0], "--dataset", args.dataset, "--split", "train", "--backend", args.backend]
+            test_cmd = ["python", "scripts/extract.py", "--model", args.models[0], "--dataset", args.dataset, "--split", "test", "--backend", args.backend]
+        else:
+            train_cmd = ["python", "scripts/extract.py", "--models"] + args.models + ["--dataset", args.dataset, "--split", "train", "--backend", args.backend]
+            test_cmd = ["python", "scripts/extract.py", "--models"] + args.models + ["--dataset", args.dataset, "--split", "test", "--backend", args.backend]
+
+        run_cmd(train_cmd, "Extracting features (train)")
+        run_cmd(test_cmd, "Extracting features (test)")
     
     if args.mode in ["train", "full"]:
         run_cmd(
             ["python", "scripts/train.py", "--models"] + args.models +
             ["--dataset", args.dataset, "--epochs", str(args.epochs),
-             "--batch-size", str(args.batch_size), "--lr", str(args.lr)],
+             "--batch-size", str(args.batch_size), "--lr", str(args.lr),
+             "--method", args.method],
             f"Training model"
         )
     
     if args.mode in ["evaluate", "full"]:
-        suffix = "single" if len(args.models) == 1 else "fusion"
+        suffix = "single" if len(args.models) == 1 else args.method
         checkpoint = f"outputs/checkpoints/{args.dataset}_{model_str}_{suffix}.pth"
         run_cmd(
             ["python", "scripts/evaluate.py", "--checkpoint", checkpoint,
-             "--models"] + args.models + ["--dataset", args.dataset],
+             "--models"] + args.models + ["--dataset", args.dataset, "--method", args.method],
             f"Evaluating model"
         )
     

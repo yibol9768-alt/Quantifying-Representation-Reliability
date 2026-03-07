@@ -87,6 +87,7 @@ class CIFAR10Dataset(BaseDataset):
         super().__init__(data_root)
         self.name = "cifar10"
         self.num_classes = 10
+        self._split_datasets = {}
 
     def load_train_data(self) -> Tuple[List[str], List[int]]:
         dataset = datasets.CIFAR10(
@@ -94,7 +95,8 @@ class CIFAR10Dataset(BaseDataset):
             train=True,
             download=True,
         )
-        return self._torchvision_to_paths(dataset)
+        self._split_datasets["train"] = dataset
+        return self._torchvision_to_indices(dataset, split="train")
 
     def load_test_data(self) -> Tuple[List[str], List[int]]:
         dataset = datasets.CIFAR10(
@@ -102,25 +104,24 @@ class CIFAR10Dataset(BaseDataset):
             train=False,
             download=True,
         )
-        return self._torchvision_to_paths(dataset)
+        self._split_datasets["test"] = dataset
+        return self._torchvision_to_indices(dataset, split="test")
 
-    def _torchvision_to_paths(self, dataset) -> Tuple[List[str], List[int]]:
-        # Convert PIL images to temporary saved paths
-        import tempfile
-        temp_dir = os.path.join(self.data_root, self.name, "temp")
-        os.makedirs(temp_dir, exist_ok=True)
+    def _torchvision_to_indices(self, dataset, split: str) -> Tuple[List[Tuple[str, int]], List[int]]:
+        image_ids = [(split, idx) for idx in range(len(dataset))]
+        labels = [int(x) for x in dataset.targets]
+        print(f"Loaded {len(image_ids)} images for {self.name} ({split})")
+        return image_ids, labels
 
-        image_paths = []
-        labels = []
-
-        for idx, (img, label) in enumerate(dataset):
-            img_path = os.path.join(temp_dir, f"img_{idx}.png")
-            img.save(img_path)
-            image_paths.append(img_path)
-            labels.append(label)
-
-        print(f"Loaded {len(image_paths)} images for {self.name}")
-        return image_paths, labels
+    def get_image(self, path) -> Image.Image:
+        if isinstance(path, tuple) and len(path) == 2:
+            split, idx = path
+            dataset = self._split_datasets.get(split)
+            if dataset is None:
+                raise RuntimeError(f"CIFAR split '{split}' not loaded")
+            img, _ = dataset[idx]
+            return img.convert("RGB")
+        return super().get_image(path)
 
 
 class CIFAR100Dataset(BaseDataset):
@@ -130,6 +131,7 @@ class CIFAR100Dataset(BaseDataset):
         super().__init__(data_root)
         self.name = "cifar100"
         self.num_classes = 100
+        self._split_datasets = {}
 
     def load_train_data(self) -> Tuple[List[str], List[int]]:
         dataset = datasets.CIFAR100(
@@ -137,7 +139,8 @@ class CIFAR100Dataset(BaseDataset):
             train=True,
             download=True,
         )
-        return self._torchvision_to_paths(dataset)
+        self._split_datasets["train"] = dataset
+        return self._torchvision_to_indices(dataset, split="train")
 
     def load_test_data(self) -> Tuple[List[str], List[int]]:
         dataset = datasets.CIFAR100(
@@ -145,24 +148,24 @@ class CIFAR100Dataset(BaseDataset):
             train=False,
             download=True,
         )
-        return self._torchvision_to_paths(dataset)
+        self._split_datasets["test"] = dataset
+        return self._torchvision_to_indices(dataset, split="test")
 
-    def _torchvision_to_paths(self, dataset) -> Tuple[List[str], List[int]]:
-        import tempfile
-        temp_dir = os.path.join(self.data_root, self.name, "temp")
-        os.makedirs(temp_dir, exist_ok=True)
+    def _torchvision_to_indices(self, dataset, split: str) -> Tuple[List[Tuple[str, int]], List[int]]:
+        image_ids = [(split, idx) for idx in range(len(dataset))]
+        labels = [int(x) for x in dataset.targets]
+        print(f"Loaded {len(image_ids)} images for {self.name} ({split})")
+        return image_ids, labels
 
-        image_paths = []
-        labels = []
-
-        for idx, (img, label) in enumerate(dataset):
-            img_path = os.path.join(temp_dir, f"img_{idx}.png")
-            img.save(img_path)
-            image_paths.append(img_path)
-            labels.append(label)
-
-        print(f"Loaded {len(image_paths)} images for {self.name}")
-        return image_paths, labels
+    def get_image(self, path) -> Image.Image:
+        if isinstance(path, tuple) and len(path) == 2:
+            split, idx = path
+            dataset = self._split_datasets.get(split)
+            if dataset is None:
+                raise RuntimeError(f"CIFAR split '{split}' not loaded")
+            img, _ = dataset[idx]
+            return img.convert("RGB")
+        return super().get_image(path)
 
 
 class Flowers102Dataset(BaseDataset):
@@ -191,20 +194,23 @@ class Flowers102Dataset(BaseDataset):
         return self._flowers_to_paths(dataset)
 
     def _flowers_to_paths(self, dataset) -> Tuple[List[str], List[int]]:
-        import tempfile
         temp_dir = os.path.join(self.data_root, self.name, "temp")
         os.makedirs(temp_dir, exist_ok=True)
 
         image_paths = []
-        labels = []
+        raw_labels = []
 
         for idx, (img, label) in enumerate(dataset):
-            # Labels are 1-102, convert to 0-101
-            label = label - 1
+            raw_labels.append(int(label))
             img_path = os.path.join(temp_dir, f"img_{idx}.jpg")
             img.save(img_path)
             image_paths.append(img_path)
-            labels.append(label)
+
+        # Normalize labels to [0, num_classes-1] for both 0-based and 1-based variants.
+        if raw_labels and min(raw_labels) == 1 and max(raw_labels) == self.num_classes:
+            labels = [x - 1 for x in raw_labels]
+        else:
+            labels = [max(0, min(int(x), self.num_classes - 1)) for x in raw_labels]
 
         print(f"Loaded {len(image_paths)} images for {self.name}")
         return image_paths, labels

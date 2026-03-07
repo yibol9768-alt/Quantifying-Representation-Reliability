@@ -3,7 +3,6 @@ DINO model wrapper
 """
 import torch
 from torchvision import transforms
-from typing import Optional
 from PIL import Image
 
 from .base import BaseModel
@@ -49,8 +48,13 @@ class DINOModel(BaseModel):
         if self.preprocess is None:
             self.load_model()
 
-        # Preprocess
-        image_input = self.preprocess(image).unsqueeze(0).to(self.device)
+        if isinstance(image, torch.Tensor):
+            image_input = image
+            if image_input.dim() == 3:
+                image_input = image_input.unsqueeze(0)
+            image_input = image_input.to(self.device)
+        else:
+            image_input = self.preprocess(image).unsqueeze(0).to(self.device)
 
         with torch.no_grad():
             feature = self.model(image_input)
@@ -59,3 +63,17 @@ class DINOModel(BaseModel):
         feature = feature / feature.norm(dim=-1, keepdim=True)
 
         return feature
+
+    def extract_batch_features(self, images) -> torch.Tensor:
+        """
+        Extract features from a preprocessed batch tensor [B, C, H, W].
+        """
+        if isinstance(images, list):
+            images = torch.stack([self.preprocess(img) for img in images], dim=0)
+        if images.dim() == 3:
+            images = images.unsqueeze(0)
+        images = images.to(self.device)
+
+        with torch.no_grad():
+            features = self.model(images)
+        return self._normalize(features)
