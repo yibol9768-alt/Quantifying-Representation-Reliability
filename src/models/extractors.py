@@ -100,23 +100,28 @@ class FeatureExtractor(nn.Module):
 
     MODEL_PATHS = {
         "mae": {
-            "path": "./models/vit-mae-base",
+            "path": "vit-mae-base",
             "hf_name": "facebook/vit-mae-base",
             "dim": 768,
         },
         "clip": {
-            "path": "./models/clip-vit-base-patch16",
+            "path": "clip-vit-base-patch16",
             "hf_name": "openai/clip-vit-base-patch16",
             "dim": 768,
         },
         "dino": {
-            "path": "./models/dinov2-base",
+            "path": "dinov2-base",
             "hf_name": "facebook/dinov2-base",
             "dim": 768,
         },
     }
 
-    def __init__(self, model_type: str = "mae", normalize_input: bool = False):
+    def __init__(
+        self,
+        model_type: str = "mae",
+        normalize_input: bool = False,
+        model_dir: str = "./models",
+    ):
         super().__init__()
         if model_type not in self.MODEL_PATHS:
             raise ValueError(f"Unsupported model type: {model_type}")
@@ -124,7 +129,7 @@ class FeatureExtractor(nn.Module):
         self.model_type = model_type
         self.normalize_input = normalize_input
         config = self.MODEL_PATHS[model_type]
-        model_path = Path(config["path"])
+        model_path = Path(model_dir) / config["path"]
 
         if not model_path.exists():
             raise FileNotFoundError(
@@ -231,14 +236,20 @@ class FeatureExtractor(nn.Module):
 class MultiModelConcatExtractor(nn.Module):
     """Baseline fusion: concatenate L2-normalized global features."""
 
-    def __init__(self, model_types: Sequence[str], output_dim: Optional[int] = None):
+    def __init__(
+        self,
+        model_types: Sequence[str],
+        output_dim: Optional[int] = None,
+        model_dir: str = "./models",
+    ):
         super().__init__()
         self.model_types = list(model_types)
         if len(self.model_types) < 2:
             raise ValueError("Fusion requires at least two models.")
 
         self.extractors = nn.ModuleDict({
-            name: FeatureExtractor(name, normalize_input=True) for name in self.model_types
+            name: FeatureExtractor(name, normalize_input=True, model_dir=model_dir)
+            for name in self.model_types
         })
         self.concat_dim = sum(self.extractors[name].feature_dim for name in self.model_types)
         if output_dim is not None:
@@ -312,6 +323,7 @@ class COMMStrictFusionExtractor(nn.Module):
         dino_mlp_blocks: int = 2,
         dino_mlp_ratio: float = 8.0,
         output_dim: Optional[int] = None,
+        model_dir: str = "./models",
     ):
         super().__init__()
         self.model_types = list(model_types)
@@ -319,7 +331,8 @@ class COMMStrictFusionExtractor(nn.Module):
             raise ValueError("COMM fusion requires at least two models.")
 
         self.extractors = nn.ModuleDict({
-            name: FeatureExtractor(name, normalize_input=True) for name in self.model_types
+            name: FeatureExtractor(name, normalize_input=True, model_dir=model_dir)
+            for name in self.model_types
         })
 
         self.layer_indices: Dict[str, List[int]] = {}
@@ -706,6 +719,7 @@ class MMViTStrictFusionExtractor(nn.Module):
         num_heads: int = 8,
         max_position_tokens: int = 256,
         output_dim: Optional[int] = None,
+        model_dir: str = "./models",
     ):
         super().__init__()
         self.model_types = list(model_types)
@@ -713,7 +727,8 @@ class MMViTStrictFusionExtractor(nn.Module):
             raise ValueError("MMViT fusion requires at least two models.")
 
         self.extractors = nn.ModuleDict({
-            name: FeatureExtractor(name, normalize_input=True) for name in self.model_types
+            name: FeatureExtractor(name, normalize_input=True, model_dir=model_dir)
+            for name in self.model_types
         })
         self.num_views = len(self.model_types)
 
@@ -871,6 +886,7 @@ def get_extractor(
     fusion_method: str = "concat",
     fusion_models: Optional[Sequence[str]] = None,
     fusion_kwargs: Optional[Dict] = None,
+    model_dir: str = "./models",
 ) -> nn.Module:
     """Factory function to create extractors.
 
@@ -881,7 +897,7 @@ def get_extractor(
         fusion_kwargs: Extra kwargs for strict fusion implementations.
     """
     if model_type != "fusion":
-        return FeatureExtractor(model_type, normalize_input=False)
+        return FeatureExtractor(model_type, normalize_input=False, model_dir=model_dir)
 
     model_types = list(fusion_models) if fusion_models is not None else ["mae", "clip", "dino"]
     fusion_method = fusion_method.lower()
@@ -891,6 +907,7 @@ def get_extractor(
         return MultiModelConcatExtractor(
             model_types,
             output_dim=fusion_kwargs.get("fusion_output_dim"),
+            model_dir=model_dir,
         )
     if fusion_method == "comm":
         return COMMStrictFusionExtractor(
@@ -898,6 +915,7 @@ def get_extractor(
             dino_mlp_blocks=fusion_kwargs.get("comm_dino_mlp_blocks", 2),
             dino_mlp_ratio=fusion_kwargs.get("comm_dino_mlp_ratio", 8.0),
             output_dim=fusion_kwargs.get("fusion_output_dim"),
+            model_dir=model_dir,
         )
     if fusion_method == "mmvit":
         return MMViTStrictFusionExtractor(
@@ -907,6 +925,7 @@ def get_extractor(
             num_heads=fusion_kwargs.get("mmvit_num_heads", 8),
             max_position_tokens=fusion_kwargs.get("mmvit_max_position_tokens", 256),
             output_dim=fusion_kwargs.get("fusion_output_dim"),
+            model_dir=model_dir,
         )
 
     raise ValueError(

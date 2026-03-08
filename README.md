@@ -14,10 +14,12 @@ git checkout test
 pip install -r requirements.txt
 
 # 3. 下载模型和数据集 (首次运行)
-python download_models.py --all
+python download_models.py --all --storage_dir /path/to/bigfiles
 
 # 4. 开始训练
-python main.py --dataset cifar100 --model mae --epochs 50 --fp16
+python main.py --dataset cifar100 --model mae \
+    --storage_dir /path/to/bigfiles \
+    --epochs 50 --batch_size 128 --cache_dtype fp32
 ```
 
 ## 环境配置
@@ -35,16 +37,16 @@ pip install -r requirements.txt
 
 ```bash
 # 下载所有模型和数据集
-python download_models.py --all
+python download_models.py --all --storage_dir /path/to/bigfiles
 
 # 只下载模型
-python download_models.py --models
+python download_models.py --models --storage_dir /path/to/bigfiles
 
 # 只下载 CIFAR-100
-python download_models.py --cifar100
+python download_models.py --cifar100 --storage_dir /path/to/bigfiles
 
 # 只下载 CIFAR-10
-python download_models.py --cifar10
+python download_models.py --cifar10 --storage_dir /path/to/bigfiles
 ```
 
 ## 手动下载 (可选)
@@ -56,15 +58,15 @@ python download_models.py --cifar10
 export HF_ENDPOINT=https://hf-mirror.com
 
 # 下载模型
-huggingface-cli download facebook/vit-mae-base --local-dir models/vit-mae-base
-huggingface-cli download openai/clip-vit-base-patch16 --local-dir models/clip-vit-base-patch16
-huggingface-cli download facebook/dinov2-base --local-dir models/dinov2-base
+huggingface-cli download facebook/vit-mae-base --local-dir /path/to/bigfiles/models/vit-mae-base
+huggingface-cli download openai/clip-vit-base-patch16 --local-dir /path/to/bigfiles/models/clip-vit-base-patch16
+huggingface-cli download facebook/dinov2-base --local-dir /path/to/bigfiles/models/dinov2-base
 ```
 
 ### 数据集格式
 
 ```
-data/
+<storage_dir>/data/
 ├── cifar10/
 │   ├── train/
 │   │   ├── airplane/
@@ -76,7 +78,11 @@ data/
 └── ...
 ```
 
+如果不传 `--storage_dir`，则默认回落到仓库内的 `./data`。
+
 ## 目录结构
+
+代码仓库：
 
 ```
 project/
@@ -91,16 +97,26 @@ project/
 │   │   └── mlp.py           # 分类器
 │   ├── data/
 │   │   └── hf_dataset.py    # 数据加载
-│   └── training/
-│       └── hf_trainer.py    # 训练器
-├── models/                   # 预训练模型 (手动下载)
+│   └── training/             # 训练与离线缓存
+│       ├── hf_trainer.py
+│       └── offline_cache.py
+└── ...
+```
+
+大文件目录（推荐通过 `--storage_dir` 指定）：
+
+```text
+<storage_dir>/
+├── models/
 │   ├── vit-mae-base/
 │   ├── clip-vit-base-patch16/
 │   └── dinov2-base/
-└── data/                     # 数据集 (手动下载)
-    ├── cifar10/
-    ├── cifar100/
-    └── ...
+├── data/
+│   ├── cifar10/
+│   └── cifar100/
+├── data_raw/
+└── cache/
+    └── offline/
 ```
 
 ## CIFAR-100 运行命令
@@ -108,25 +124,36 @@ project/
 默认推荐：
 
 ```bash
---epochs 50 --batch_size 128 --cache_dtype fp32
+--storage_dir /path/to/bigfiles --epochs 50 --batch_size 128 --cache_dtype fp32
 ```
 
 首次运行会先构建离线缓存；之后只要不加 `--rebuild_cache`，并且不加 `--cleanup_cache`，同配置会直接复用缓存。
 默认不启用 `--fp16`，也就是全精度训练与缓存；如果显存或速度有压力，再额外加 `--fp16`。
+`--storage_dir` 会统一控制大文件根目录：
+
+```text
+/path/to/bigfiles/
+├── models/
+├── data/
+└── cache/
+```
 
 ### 单模型
 
 ```bash
 # MAE
 python main.py --dataset cifar100 --model mae \
+    --storage_dir /path/to/bigfiles \
     --epochs 50 --batch_size 128 --cache_dtype fp32
 
 # CLIP
 python main.py --dataset cifar100 --model clip \
+    --storage_dir /path/to/bigfiles \
     --epochs 50 --batch_size 128 --cache_dtype fp32
 
 # DINO
 python main.py --dataset cifar100 --model dino \
+    --storage_dir /path/to/bigfiles \
     --epochs 50 --batch_size 128 --cache_dtype fp32
 ```
 
@@ -135,31 +162,37 @@ python main.py --dataset cifar100 --model dino \
 ```bash
 # Concat: clip + dino
 python main.py --dataset cifar100 --model fusion \
+    --storage_dir /path/to/bigfiles \
     --fusion_method concat --fusion_models clip,dino \
     --epochs 50 --batch_size 128 --cache_dtype fp32
 
 # Concat: mae + clip + dino
 python main.py --dataset cifar100 --model fusion \
+    --storage_dir /path/to/bigfiles \
     --fusion_method concat --fusion_models mae,clip,dino \
     --epochs 50 --batch_size 128 --cache_dtype fp32
 
 # COMM: clip + dino
 python main.py --dataset cifar100 --model fusion \
+    --storage_dir /path/to/bigfiles \
     --fusion_method comm --fusion_models clip,dino \
     --epochs 50 --batch_size 128 --cache_dtype fp32
 
 # COMM: mae + clip + dino
 python main.py --dataset cifar100 --model fusion \
+    --storage_dir /path/to/bigfiles \
     --fusion_method comm --fusion_models mae,clip,dino \
     --epochs 50 --batch_size 128 --cache_dtype fp32
 
 # MMViT: clip + dino
 python main.py --dataset cifar100 --model fusion \
+    --storage_dir /path/to/bigfiles \
     --fusion_method mmvit --fusion_models clip,dino \
     --epochs 50 --batch_size 128 --cache_dtype fp32
 
 # MMViT: mae + clip + dino
 python main.py --dataset cifar100 --model fusion \
+    --storage_dir /path/to/bigfiles \
     --fusion_method mmvit --fusion_models mae,clip,dino \
     --epochs 50 --batch_size 128 --cache_dtype fp32
 ```
@@ -169,16 +202,19 @@ python main.py --dataset cifar100 --model fusion \
 ```bash
 # 三种融合方法统一输出维度、统一 seed
 python main.py --dataset cifar100 --model fusion \
+    --storage_dir /path/to/bigfiles \
     --fusion_method concat --fusion_models mae,clip,dino \
     --fusion_output_dim 1024 --seed 42 \
     --epochs 50 --batch_size 128 --cache_dtype fp32
 
 python main.py --dataset cifar100 --model fusion \
+    --storage_dir /path/to/bigfiles \
     --fusion_method comm --fusion_models mae,clip,dino \
     --fusion_output_dim 1024 --seed 42 \
     --epochs 50 --batch_size 128 --cache_dtype fp32
 
 python main.py --dataset cifar100 --model fusion \
+    --storage_dir /path/to/bigfiles \
     --fusion_method mmvit --fusion_models mae,clip,dino \
     --fusion_output_dim 1024 --seed 42 \
     --epochs 50 --batch_size 128 --cache_dtype fp32
@@ -204,9 +240,9 @@ python main.py --dataset cifar100 --model fusion \
 
 | 模型 | 参数 | 特征维度 | 本地路径 |
 |------|------|----------|----------|
-| MAE | `--model mae` | 768 | `models/vit-mae-base` |
-| CLIP | `--model clip` | 768 | `models/clip-vit-base-patch16` |
-| DINO | `--model dino` | 768 | `models/dinov2-base` |
+| MAE | `--model mae` | 768 | `<storage_dir>/models/vit-mae-base` |
+| CLIP | `--model clip` | 768 | `<storage_dir>/models/clip-vit-base-patch16` |
+| DINO | `--model dino` | 768 | `<storage_dir>/models/dinov2-base` |
 | Fusion | `--model fusion` | 取决于融合方法与模型数 | 支持 2 模型 / 3 模型 |
 
 ## Fusion 方法
@@ -228,16 +264,24 @@ python main.py --dataset cifar100 --model fusion \
 默认训练流程会先把 frozen backbone 的输出写入 `--cache_dir`，然后只从缓存训练后续模块和 MLP。
 
 ```bash
+# 统一指定大文件目录
+python main.py --dataset cifar100 --model clip \
+    --storage_dir /path/to/bigfiles \
+    --epochs 50 --cache_dtype fp32
+
 # 默认使用 fp32 离线缓存
 python main.py --dataset cifar100 --model fusion \
+    --storage_dir /path/to/bigfiles \
     --fusion_method comm --fusion_models clip,dino \
-    --cache_dir ./cache/offline --cache_dtype fp32
+    --cache_dtype fp32
 
 # 强制重建缓存
-python main.py --dataset cifar100 --model dino --rebuild_cache
+python main.py --dataset cifar100 --model dino \
+    --storage_dir /path/to/bigfiles --rebuild_cache
 
 # 训练完成后删除缓存文件
-python main.py --dataset cifar10 --model clip --cleanup_cache
+python main.py --dataset cifar10 --model clip \
+    --storage_dir /path/to/bigfiles --cleanup_cache
 ```
 
 ## 预期结果

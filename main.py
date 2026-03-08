@@ -22,6 +22,10 @@ from src.training.offline_cache import (
     move_to_device,
 )
 
+DEFAULT_MODEL_DIR = "./models"
+DEFAULT_DATA_DIR = "./data"
+DEFAULT_CACHE_DIR = "./cache/offline"
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Feature Classification")
@@ -56,12 +60,14 @@ def parse_args():
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--hidden_dim", type=int, default=512)
     parser.add_argument("--device", type=str, default="cuda:0")
-    parser.add_argument("--data_dir", type=str, default="./data")
+    parser.add_argument("--storage_dir", type=str, default=None,
+                        help="Root directory for large files: models/, data/, cache/")
+    parser.add_argument("--data_dir", type=str, default=DEFAULT_DATA_DIR)
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--no_precompute", action="store_true",
                         help="Optional fallback: disable offline cache and train from raw images")
-    parser.add_argument("--cache_dir", type=str, default="./cache/offline",
+    parser.add_argument("--cache_dir", type=str, default=DEFAULT_CACHE_DIR,
                         help="Directory for disk-backed offline caches")
     parser.add_argument("--cache_dtype", type=str, default="fp32",
                         choices=["fp32", "fp16"],
@@ -156,6 +162,21 @@ def print_gpu_usage():
         allocated = torch.cuda.memory_allocated() / 1024**3
         reserved = torch.cuda.memory_reserved() / 1024**3
         print(f"GPU Memory: {allocated:.2f}GB used / {reserved:.2f}GB reserved")
+
+
+def resolve_storage_paths(args):
+    """Resolve model/data/cache paths from a shared storage root."""
+    if args.storage_dir is None:
+        args.model_dir = DEFAULT_MODEL_DIR
+        return
+
+    storage_root = Path(args.storage_dir)
+    args.model_dir = str(storage_root / "models")
+
+    if args.data_dir == DEFAULT_DATA_DIR:
+        args.data_dir = str(storage_root / "data")
+    if args.cache_dir == DEFAULT_CACHE_DIR:
+        args.cache_dir = str(storage_root / "cache" / "offline")
 
 
 def get_cache_storage_dtype(args) -> torch.dtype:
@@ -276,6 +297,7 @@ def train_with_offline_cache(args, config):
         fusion_method=args.fusion_method,
         fusion_models=args.fusion_model_list,
         fusion_kwargs=get_fusion_kwargs(args),
+        model_dir=args.model_dir,
     ).to(device)
     print(f"Feature dimension: {extractor.feature_dim}")
     print_gpu_usage()
@@ -436,6 +458,7 @@ def train_online(args, config):
         fusion_method=args.fusion_method,
         fusion_models=args.fusion_model_list,
         fusion_kwargs=get_fusion_kwargs(args),
+        model_dir=args.model_dir,
     ).to(device)
     fusion_trainable = is_trainable_fusion(args)
     if fusion_trainable:
@@ -570,6 +593,7 @@ def train_online(args, config):
 def main():
     args = parse_args()
     set_random_seed(args.seed)
+    resolve_storage_paths(args)
 
     if args.model == "fusion":
         args.fusion_model_list = parse_fusion_models(args.fusion_models)
@@ -609,6 +633,9 @@ def main():
     print(f"Seed: {args.seed}")
     print(f"Offline cache mode: {not args.no_precompute}")
     print(f"Mixed precision (fp16): {args.fp16}")
+    print(f"Storage dir: {args.storage_dir if args.storage_dir is not None else '(repo defaults)'}")
+    print(f"Model dir: {args.model_dir}")
+    print(f"Data dir: {args.data_dir}")
     print(f"Cache dir: {args.cache_dir}")
     print(f"Cache dtype: {args.cache_dtype}")
     print(f"Rebuild cache: {args.rebuild_cache}")
