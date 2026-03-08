@@ -1,31 +1,11 @@
 # Feature Classification with MAE/CLIP/DINO
 
-使用 MAE、CLIP、DINO 预训练模型提取特征，配合 MLP 分类器在多个数据集上进行训练。
-
-## 项目结构
-
-```
-├── README.md
-├── main.py              # 主入口
-├── requirements.txt     # 依赖
-├── configs/
-│   └── config.py        # 配置文件
-└── src/
-    ├── data/
-    │   └── dataset.py   # 多数据集加载
-    ├── models/
-    │   ├── mae.py       # MAE 特征提取
-    │   ├── clip.py      # CLIP 特征提取
-    │   └── dino.py      # DINO 特征提取
-    └── training/
-        ├── mlp.py       # MLP 分类器
-        └── trainer.py   # 训练器
-```
+使用 HuggingFace Transformers 的预训练模型提取特征，配合 MLP 分类器。
 
 ## 环境配置
 
 ```bash
-# 创建虚拟环境
+# 创建环境
 conda create -n feature_cls python=3.10
 conda activate feature_cls
 
@@ -33,93 +13,169 @@ conda activate feature_cls
 pip install -r requirements.txt
 ```
 
-## 支持的数据集
+## 手动下载
 
-### 自动下载
+### 1. 下载模型
 
-| 数据集 | 参数 | 类别数 | 描述 |
-|--------|------|--------|------|
-| CIFAR-10 | `--dataset cifar10` | 10 | 简单图像分类 |
-| CIFAR-100 | `--dataset cifar100` | 100 | 标准benchmark |
-| STL-10 | `--dataset stl10` | 10 | 自监督评估 |
-| Flowers-102 | `--dataset flowers102` | 102 | 花卉细粒度 |
-| Food-101 | `--dataset food101` | 101 | 食物分类 |
-| Oxford Pets | `--dataset pets` | 37 | 宠物细粒度 |
-| Caltech-101 | `--dataset caltech101` | 101 | 物体识别 |
+```bash
+# 创建模型目录
+mkdir -p models
 
-### 手动下载
+# MAE (ViT-Base)
+huggingface-cli download facebook/vit-mae-base --local-dir models/vit-mae-base
 
-| 数据集 | 参数 | 类别数 | 下载地址 |
-|--------|------|--------|----------|
-| Tiny ImageNet | `--dataset tiny_imagenet` | 200 | [下载](http://cs231n.stanford.edu/tiny-imagenet-200.zip) |
-| CUB-200 | `--dataset cub200` | 200 | [下载](https://data.caltech.edu/records/65de2-v2p15) |
+# CLIP (ViT-B/16)
+huggingface-cli download openai/clip-vit-base-patch16 --local-dir models/clip-vit-base-patch16
 
-手动下载的数据集请解压到 `data/` 目录：
+# DINOv2 (ViT-Base)
+huggingface-cli download facebook/dinov2-base --local-dir models/dinov2-base
+```
+
+或者使用镜像：
+
+```bash
+# 设置镜像 (国内)
+export HF_ENDPOINT=https://hf-mirror.com
+
+# 然后下载
+huggingface-cli download facebook/vit-mae-base --local-dir models/vit-mae-base
+```
+
+### 2. 下载数据集
+
+数据集放到 `data/` 目录，格式如下：
+
 ```
 data/
-├── tiny-imagenet-200/
+├── cifar10/
 │   ├── train/
-│   └── val/
-└── CUB_200_2011/
-    └── images/
+│   │   ├── airplane/
+│   │   ├── automobile/
+│   │   └── ...
+│   └── test/
+│       ├── airplane/
+│       └── ...
+├── cifar100/
+│   ├── train/
+│   └── test/
+└── flowers102/
+    ├── train/
+    └── test/
+```
+
+#### 数据集下载链接
+
+| 数据集 | 下载地址 | 格式转换 |
+|--------|----------|----------|
+| CIFAR-10 | [官网](https://www.cs.toronto.edu/~kriz/cifar-10-python.tar.gz) | 需转换为图像文件夹 |
+| CIFAR-100 | [官网](https://www.cs.toronto.edu/~kriz/cifar-100-python.tar.gz) | 需转换为图像文件夹 |
+| STL-10 | [官网](https://cs.stanford.edu/~acoates/stl10/) | 需转换为图像文件夹 |
+| Tiny ImageNet | [下载](http://cs231n.stanford.edu/tiny-imagenet-200.zip) | 解压即可 |
+| Flowers-102 | [官网](https://www.robots.ox.ac.uk/~vgg/data/flowers/102/) | 需整理为 train/test |
+| Food-101 | [官网](https://data.vision.ee.ethz.ch/cvl/food-101.tar.gz) | 解压即可 |
+| Oxford Pets | [官网](https://www.robots.ox.ac.uk/~vgg/data/pets/) | 需整理 |
+| CUB-200 | [官网](https://data.caltech.edu/records/65de2-v2p15) | 需整理 |
+
+#### CIFAR 转换脚本
+
+```python
+# convert_cifar.py
+import torchvision
+from PIL import Image
+from pathlib import Path
+
+def convert_cifar(name, data_dir, output_dir):
+    """Convert CIFAR to image folders."""
+    train_set = torchvision.datasets.CIFAR10(data_dir, train=True, download=False)
+    test_set = torchvision.datasets.CIFAR10(data_dir, train=False, download=False)
+
+    for split, dataset in [("train", train_set), ("test", test_set)]:
+        split_dir = Path(output_dir) / name / split
+        for i in range(len(dataset)):
+            img, label = dataset[i]
+            class_name = dataset.classes[label]
+            class_dir = split_dir / class_name
+            class_dir.mkdir(parents=True, exist_ok=True)
+            img.save(class_dir / f"{i}.png")
+
+    print(f"Converted {name} to {output_dir}/{name}")
+
+# 使用
+convert_cifar("cifar10", "./raw_data", "./data")
+```
+
+## 目录结构
+
+```
+project/
+├── main.py
+├── requirements.txt
+├── README.md
+├── configs/
+│   └── config.py
+├── src/
+│   ├── models/
+│   │   ├── extractors.py    # 模型加载 (离线)
+│   │   └── mlp.py           # 分类器
+│   ├── data/
+│   │   └── hf_dataset.py    # 数据加载
+│   └── training/
+│       └── hf_trainer.py    # 训练器
+├── models/                   # 预训练模型 (手动下载)
+│   ├── vit-mae-base/
+│   ├── clip-vit-base-patch16/
+│   └── dinov2-base/
+└── data/                     # 数据集 (手动下载)
+    ├── cifar10/
+    ├── cifar100/
+    └── ...
 ```
 
 ## 使用方法
 
-### 1. 查看可用数据集
-
 ```bash
-python main.py --list_datasets
-```
+# 基本用法
+python main.py --dataset cifar100 --model mae --epochs 50
 
-### 2. 单模型训练
+# 预计算特征 (更快)
+python main.py --dataset cifar100 --model mae --precompute --epochs 50
 
-```bash
-# CIFAR-10 + MAE
-python main.py --dataset cifar10 --model mae --epochs 50
+# 融合模型
+python main.py --dataset cifar100 --model fusion --epochs 50
 
-# CIFAR-100 + CLIP
-python main.py --dataset cifar100 --model clip --epochs 50
-
-# Flowers-102 + DINO
-python main.py --dataset flowers102 --model dino --epochs 50
-
-# Food-101 + Fusion (全部特征融合)
-python main.py --dataset food101 --model fusion --epochs 50
-```
-
-### 3. 完整参数
-
-```bash
+# 完整参数
 python main.py \
-    --dataset cifar100 \   # 数据集
-    --model mae \          # 模型: mae/clip/dino/fusion
-    --epochs 50 \          # 训练轮数
-    --lr 0.001 \           # 学习率
-    --batch_size 128 \     # 批大小
-    --hidden_dim 512 \     # MLP 隐藏层维度
-    --device cuda:0        # GPU 设备
-```
-
-### 4. 批量实验脚本
-
-```bash
-# 运行所有数据集 + 所有模型
-for dataset in cifar10 cifar100 stl10 flowers102 food101 pets; do
-    for model in mae clip dino fusion; do
-        python main.py --dataset $dataset --model $model --epochs 50
-    done
-done
+    --dataset cifar100 \
+    --model mae \
+    --epochs 50 \
+    --lr 0.001 \
+    --batch_size 128 \
+    --hidden_dim 512 \
+    --device cuda:0 \
+    --precompute
 ```
 
 ## 模型说明
 
-| 模型 | 特征维度 | 预训练来源 |
-|------|----------|------------|
-| MAE (ViT-B) | 768 | ImageNet |
-| CLIP (ViT-B/16) | 512 | ImageNet + 文本 |
-| DINO (ViT-B/16) | 768 | ImageNet |
-| Fusion (拼接) | 2048 | - |
+| 模型 | 参数 | 特征维度 | 本地路径 |
+|------|------|----------|----------|
+| MAE | `--model mae` | 768 | `models/vit-mae-base` |
+| CLIP | `--model clip` | 512 | `models/clip-vit-base-patch16` |
+| DINO | `--model dino` | 768 | `models/dinov2-base` |
+| Fusion | `--model fusion` | 2048 | 拼接以上三个 |
+
+## Fusion 实现
+
+```python
+# 简单拼接 + L2 归一化
+features = []
+for name in ["mae", "clip", "dino"]:
+    feat = extractors[name](images)
+    feat = feat / feat.norm(dim=-1, keepdim=True)  # 归一化
+    features.append(feat)
+
+fused = torch.cat(features, dim=-1)  # 768+512+768=2048
+```
 
 ## 预期结果
 
@@ -127,14 +183,4 @@ done
 |--------|-----|------|------|--------|
 | CIFAR-10 | ~95% | ~96% | ~95% | ~97% |
 | CIFAR-100 | ~75% | ~82% | ~78% | ~85% |
-| STL-10 | ~97% | ~98% | ~97% | ~99% |
 | Flowers-102 | ~85% | ~90% | ~88% | ~93% |
-| Food-101 | ~70% | ~80% | ~75% | ~82% |
-| Oxford Pets | ~85% | ~90% | ~88% | ~92% |
-
-## 注意事项
-
-1. 首次运行会自动下载预训练模型（约 1-2GB）
-2. 需要至少 8GB 显存
-3. 部分数据集（Tiny ImageNet, CUB-200）需手动下载
-4. 数据集会自动下载到 `data/` 目录
