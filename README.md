@@ -109,20 +109,20 @@ project/
 # 基本用法
 python main.py --dataset cifar100 --model mae --epochs 50
 
-# 在线提特征训练 (关闭预计算)
+# 在线提特征训练 (仅调试时使用)
 python main.py --dataset cifar100 --model mae --no_precompute --epochs 50
 
 # 融合: concat (2 模型)
 python main.py --dataset cifar100 --model fusion \
     --fusion_method concat --fusion_models clip,dino --epochs 50
 
-# 融合: COMM token-level (2 模型)
+# 融合: COMM token-level (2 模型, 默认离线缓存)
 python main.py --dataset cifar100 --model fusion \
-    --fusion_method comm --fusion_models clip,dino --epochs 50 --no_precompute
+    --fusion_method comm --fusion_models clip,dino --epochs 50
 
-# 融合: MMViT token-level (3 模型)
+# 融合: MMViT token-level (3 模型, 默认离线缓存)
 python main.py --dataset cifar100 --model fusion \
-    --fusion_method mmvit --fusion_models mae,clip,dino --epochs 50 --no_precompute
+    --fusion_method mmvit --fusion_models mae,clip,dino --epochs 50
 
 # 横向对比（推荐）：三种方法同维度、同训练协议、同seed
 python main.py --dataset cifar100 --model fusion \
@@ -146,7 +146,9 @@ python main.py \
     --batch_size 128 \
     --hidden_dim 512 \
     --device cuda:0 \
-    --no_precompute \
+    --cache_dir ./cache/offline \
+    --cache_dtype fp32 \
+    --cleanup_cache \
     --fp16
 ```
 
@@ -169,9 +171,26 @@ python main.py \
 
 > 默认开启融合横向对比模式（harmonization）：  
 > 1) 三种方法统一输出维度 `--fusion_output_dim`；  
-> 2) 三种方法统一在线训练协议（自动 `--no_precompute`）；  
+> 2) 三种方法统一离线缓存训练协议；  
 > 3) 统一随机种子 `--seed`。  
 > 若需要关闭，使用 `--disable_fusion_harmonization`。
+
+## 离线缓存
+
+默认训练流程会先把 frozen backbone 的输出写入 `--cache_dir`，然后只从缓存训练后续模块和 MLP。
+
+```bash
+# 默认使用 fp32 离线缓存
+python main.py --dataset cifar100 --model fusion \
+    --fusion_method comm --fusion_models clip,dino \
+    --cache_dir ./cache/offline --cache_dtype fp32
+
+# 强制重建缓存
+python main.py --dataset cifar100 --model dino --rebuild_cache
+
+# 训练完成后删除缓存文件
+python main.py --dataset cifar10 --model clip --cleanup_cache
+```
 
 ## 预期结果
 

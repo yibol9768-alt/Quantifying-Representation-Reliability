@@ -192,6 +192,20 @@ class FeatureExtractor(nn.Module):
         return outputs.last_hidden_state[:, 0]
 
     @torch.no_grad()
+    def extract_cache_batch(self, pixel_values: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """Extract cacheable tensors from frozen backbones."""
+        return {"features": self.forward(pixel_values)}
+
+    def forward_from_cache(self, cached_inputs: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """Rebuild classifier input features from cached tensors."""
+        return cached_inputs["features"]
+
+    def release_backbones(self):
+        """Free backbone modules once cache extraction is complete."""
+        self.model = None
+        self.processor = None
+
+    @torch.no_grad()
     def extract_last_tokens(self, pixel_values: torch.Tensor) -> Dict[str, torch.Tensor]:
         """Extract CLS token and patch tokens from the last layer."""
         outputs = self._run_model(pixel_values, output_hidden_states=False)
@@ -245,6 +259,33 @@ class MultiModelConcatExtractor(nn.Module):
             features.append(feat)
         fused = torch.cat(features, dim=-1)
         return self.output_proj(fused)
+
+    @torch.no_grad()
+    def extract_cache_batch(self, pixel_values: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """Cache per-branch global features for offline fusion training."""
+        return {
+            f"feat_{name}": self.extractors[name](pixel_values)
+            for name in self.model_types
+        }
+
+    def forward_from_cache(
+        self,
+        cached_inputs: Dict[str, torch.Tensor],
+        normalize: bool = True,
+    ) -> torch.Tensor:
+        """Fuse cached branch features without touching backbones."""
+        features = []
+        for name in self.model_types:
+            feat = cached_inputs[f"feat_{name}"]
+            if normalize:
+                feat = feat / (feat.norm(dim=-1, keepdim=True) + 1e-8)
+            features.append(feat)
+        fused = torch.cat(features, dim=-1)
+        return self.output_proj(fused)
+
+    def release_backbones(self):
+        """Drop frozen backbones once their outputs are cached."""
+        self.extractors = None
 
 
 class TokenMLP(nn.Module):
@@ -352,6 +393,28 @@ class COMMStrictFusionExtractor(nn.Module):
         merged = (stacked * weights).sum(dim=0)
         return self.aligners[model_name](merged)
 
+    def _merge_cached_layers(self, model_name: str, cached_layers: torch.Tensor) -> torch.Tensor:
+        modules = self.lln_modules[model_name]
+        if cached_layers.ndim != 4:
+            raise ValueError(
+                f"Expected cached COMM layers for {model_name} to have shape [B, L, N, D], "
+                f"got {tuple(cached_layers.shape)}."
+            )
+        if cached_layers.size(1) != len(modules):
+            raise RuntimeError(
+                f"Cached layer count mismatch for {model_name}: "
+                f"{cached_layers.size(1)} vs expected {len(modules)}."
+            )
+
+        transformed_layers = []
+        for idx, module in enumerate(modules):
+            transformed_layers.append(module(cached_layers[:, idx]))
+
+        stacked = torch.stack(transformed_layers, dim=0)
+        weights = torch.softmax(self.layer_scale_logits[model_name], dim=0).view(-1, 1, 1, 1)
+        merged = (stacked * weights).sum(dim=0)
+        return self.aligners[model_name](merged)
+
     def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
         branch_tokens: List[torch.Tensor] = []
         target_tokens: Optional[int] = None
@@ -368,6 +431,39 @@ class COMMStrictFusionExtractor(nn.Module):
         fused = torch.cat(aligned, dim=-1)
         fused = self.final_proj(self.final_norm(fused))
         return fused.mean(dim=1)
+
+    @torch.no_grad()
+    def extract_cache_batch(self, pixel_values: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """Cache only the hidden token layers consumed by COMM."""
+        cached_inputs: Dict[str, torch.Tensor] = {}
+        for name in self.model_types:
+            token_layers = self.extractors[name].extract_hidden_tokens(pixel_values)
+            selected_layers = []
+            for idx in self.layer_indices[name]:
+                safe_idx = max(0, min(idx, len(token_layers) - 1))
+                selected_layers.append(token_layers[safe_idx])
+            cached_inputs[f"layers_{name}"] = torch.stack(selected_layers, dim=1)
+        return cached_inputs
+
+    def forward_from_cache(self, cached_inputs: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """Fuse cached hidden token stacks without rerunning backbones."""
+        branch_tokens: List[torch.Tensor] = []
+        target_tokens: Optional[int] = None
+
+        for name in self.model_types:
+            merged = self._merge_cached_layers(name, cached_inputs[f"layers_{name}"])
+            branch_tokens.append(merged)
+            target_tokens = merged.size(1) if target_tokens is None else min(target_tokens, merged.size(1))
+
+        assert target_tokens is not None
+        aligned = [_resize_tokens(tokens, target_tokens) for tokens in branch_tokens]
+        fused = torch.cat(aligned, dim=-1)
+        fused = self.final_proj(self.final_norm(fused))
+        return fused.mean(dim=1)
+
+    def release_backbones(self):
+        """Drop frozen backbones once token caches are available."""
+        self.extractors = None
 
 
 class MultiHeadPoolingAttention(nn.Module):
@@ -714,6 +810,32 @@ class MMViTStrictFusionExtractor(nn.Module):
 
         return views, has_cls_flags
 
+    def _build_view_tokens_from_cache(
+        self,
+        cached_inputs: Dict[str, torch.Tensor],
+    ) -> Tuple[List[torch.Tensor], List[bool]]:
+        patch_tokens = [cached_inputs[f"patches_{name}"] for name in self.model_types]
+        high_res_tokens = patch_tokens[0].size(1)
+        views: List[torch.Tensor] = []
+        has_cls_flags: List[bool] = []
+
+        for idx, name in enumerate(self.model_types):
+            target_tokens = max(4, high_res_tokens // (4 ** idx))
+            tokens = _resize_tokens(patch_tokens[idx], target_tokens)
+            tokens = self.input_proj[name](tokens)
+
+            if idx == 0:
+                cls_token = self.cls_token.expand(tokens.size(0), -1, -1)
+                tokens = torch.cat([cls_token, tokens], dim=1)
+                has_cls_flags.append(True)
+            else:
+                has_cls_flags.append(False)
+
+            tokens = _add_positional_embedding(tokens, self.pos_embed[idx])
+            views.append(tokens)
+
+        return views, has_cls_flags
+
     def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
         views, has_cls_flags = self._build_view_tokens(pixel_values)
         for stage in self.stages:
@@ -722,6 +844,26 @@ class MMViTStrictFusionExtractor(nn.Module):
         # Paper uses CLS from the first view for classification.
         cls_feature = views[0][:, 0]
         return self.final_proj(self.final_norm(cls_feature))
+
+    @torch.no_grad()
+    def extract_cache_batch(self, pixel_values: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """Cache last-layer patch tokens for offline MMViT training."""
+        return {
+            f"patches_{name}": self.extractors[name].extract_last_tokens(pixel_values)["patches"]
+            for name in self.model_types
+        }
+
+    def forward_from_cache(self, cached_inputs: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """Run MMViT fusion on cached patch tokens."""
+        views, has_cls_flags = self._build_view_tokens_from_cache(cached_inputs)
+        for stage in self.stages:
+            views = stage(views, has_cls_flags)
+        cls_feature = views[0][:, 0]
+        return self.final_proj(self.final_norm(cls_feature))
+
+    def release_backbones(self):
+        """Drop frozen backbones once token caches are available."""
+        self.extractors = None
 
 
 def get_extractor(

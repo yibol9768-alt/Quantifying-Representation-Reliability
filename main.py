@@ -8,12 +8,19 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.cuda.amp import autocast, GradScaler
 from tqdm import tqdm
-import time
+from pathlib import Path
 
 from configs.config import Config, DATASET_CONFIGS
 from src.models.extractors import get_extractor
 from src.models.mlp import MLPClassifier
 from src.data.hf_dataset import get_dataloaders
+from src.training.offline_cache import (
+    CachedShardDataset,
+    GroupedShardSampler,
+    build_split_cache,
+    cleanup_cache_dir,
+    move_to_device,
+)
 
 
 def parse_args():
@@ -53,7 +60,16 @@ def parse_args():
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--no_precompute", action="store_true",
-                        help="Disable pre-computing features (slower, but more realistic)")
+                        help="Optional fallback: disable offline cache and train from raw images")
+    parser.add_argument("--cache_dir", type=str, default="./cache/offline",
+                        help="Directory for disk-backed offline caches")
+    parser.add_argument("--cache_dtype", type=str, default="fp32",
+                        choices=["fp32", "fp16"],
+                        help="Storage dtype for offline cache tensors")
+    parser.add_argument("--rebuild_cache", action="store_true",
+                        help="Force rebuilding offline cache files")
+    parser.add_argument("--cleanup_cache", action="store_true",
+                        help="Delete generated cache files after training finishes")
     parser.add_argument("--fp16", action="store_true",
                         help="Use mixed precision (faster on modern GPUs)")
 
@@ -142,63 +158,116 @@ def print_gpu_usage():
         print(f"GPU Memory: {allocated:.2f}GB used / {reserved:.2f}GB reserved")
 
 
-@torch.no_grad()
-def precompute_features(extractor, dataloader, device, use_fp16=False):
-    """Pre-compute features for entire dataset - optimized."""
-    all_features = []
-    all_labels = []
-
-    extractor.eval()
-    total_time = 0
-    n_batches = 0
-
-    pbar = tqdm(dataloader, desc="Extracting features")
-    for images, labels in pbar:
-        start = time.time()
-
-        images = images.to(device, non_blocking=True)
-
-        if use_fp16:
-            with autocast():
-                features = extractor(images)
-        else:
-            features = extractor(images)
-
-        # Keep on GPU for now, move at end
-        all_features.append(features)
-        all_labels.append(labels.to(device, non_blocking=True))
-
-        batch_time = time.time() - start
-        total_time += batch_time
-        n_batches += 1
-
-        pbar.set_postfix({
-            "batch_time": f"{batch_time:.3f}s",
-            "avg_time": f"{total_time/n_batches:.3f}s"
-        })
-
-    # Move to CPU at end
-    features = torch.cat(all_features, dim=0).cpu()
-    labels = torch.cat(all_labels, dim=0).cpu()
-
-    return features, labels
+def get_cache_storage_dtype(args) -> torch.dtype:
+    """Map CLI cache dtype to torch dtype."""
+    return torch.float16 if args.cache_dtype == "fp16" else torch.float32
 
 
-def train_with_precomputed_features(args, config):
-    """Train with pre-computed features (fastest)."""
+def get_cache_name(args) -> str:
+    """Build a cache directory name for the current experiment."""
+    if args.model == "fusion":
+        model_tag = "-".join(args.fusion_model_list)
+        parts = [args.dataset, "fusion", args.fusion_method, model_tag]
+        if use_fusion_harmonization(args):
+            parts.append(f"dim{args.fusion_output_dim}")
+    else:
+        parts = [args.dataset, args.model]
+
+    parts.append(f"seed{args.seed}")
+    parts.append(f"cache{args.cache_dtype}")
+    return "_".join(parts).replace(".", "p")
+
+
+def has_trainable_extractor(extractor) -> bool:
+    """Check whether the cached extractor still has trainable layers."""
+    return any(param.requires_grad for param in extractor.parameters())
+
+
+def save_offline_checkpoint(args, classifier, extractor):
+    """Save classifier and any trainable post-cache fusion layers."""
+    payload = {
+        "classifier": classifier.state_dict(),
+        "args": vars(args),
+    }
+    if has_trainable_extractor(extractor):
+        payload["extractor"] = extractor.state_dict()
+    torch.save(payload, get_checkpoint_name(args))
+
+
+def build_cached_loaders(args, extractor, device, use_fp16):
+    """Build disk-backed offline caches and dataloaders."""
+    cache_root = Path(args.cache_dir) / get_cache_name(args)
+    train_split_dir = cache_root / "train"
+    test_split_dir = cache_root / "test"
+
+    print(f"\nLoading dataset {args.dataset}...")
+    image_train_loader, image_test_loader = get_dataloaders(
+        args.dataset, args.data_dir, args.batch_size, args.num_workers, args.loader_model_type
+    )
+
+    storage_dtype = get_cache_storage_dtype(args)
+
+    print(f"\n[Step 1/3] Building train cache at {train_split_dir}")
+    build_split_cache(
+        extractor=extractor,
+        dataloader=image_train_loader,
+        split_dir=train_split_dir,
+        split="train",
+        device=device,
+        storage_dtype=storage_dtype,
+        use_fp16=use_fp16,
+        recache=args.rebuild_cache,
+    )
+
+    print(f"\n[Step 2/3] Building test cache at {test_split_dir}")
+    build_split_cache(
+        extractor=extractor,
+        dataloader=image_test_loader,
+        split_dir=test_split_dir,
+        split="test",
+        device=device,
+        storage_dtype=storage_dtype,
+        use_fp16=use_fp16,
+        recache=args.rebuild_cache,
+    )
+
+    extractor.release_backbones()
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+
+    train_dataset = CachedShardDataset(train_split_dir)
+    test_dataset = CachedShardDataset(test_split_dir)
+    train_sampler = GroupedShardSampler(train_dataset, shuffle=True, seed=args.seed)
+    test_sampler = GroupedShardSampler(test_dataset, shuffle=False, seed=args.seed)
+
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,
+        sampler=train_sampler,
+        num_workers=0,
+        pin_memory=device.type == "cuda",
+    )
+    test_loader = torch.utils.data.DataLoader(
+        test_dataset,
+        batch_size=args.batch_size,
+        sampler=test_sampler,
+        num_workers=0,
+        pin_memory=device.type == "cuda",
+    )
+
+    return train_loader, test_loader, cache_root
+
+
+def train_with_offline_cache(args, config):
+    """Train from disk-backed offline caches."""
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     use_fp16 = args.fp16 and torch.cuda.is_available()
     scaler = GradScaler() if use_fp16 else None
 
     print(f"\nDevice: {device}")
     print(f"Mixed precision: {use_fp16}")
+    print(f"Cache dtype: {args.cache_dtype}")
     print_gpu_usage()
-
-    # Load data
-    print(f"\nLoading dataset {args.dataset}...")
-    train_loader, test_loader = get_dataloaders(
-        args.dataset, args.data_dir, args.batch_size, args.num_workers, args.loader_model_type
-    )
 
     # Feature extractor
     print(f"\nLoading {args.model} model...")
@@ -208,9 +277,10 @@ def train_with_precomputed_features(args, config):
         fusion_models=args.fusion_model_list,
         fusion_kwargs=get_fusion_kwargs(args),
     ).to(device)
-    extractor.eval()
     print(f"Feature dimension: {extractor.feature_dim}")
     print_gpu_usage()
+
+    train_loader, test_loader, cache_root = build_cached_loaders(args, extractor, device, use_fp16)
 
     # Classifier
     classifier = MLPClassifier(
@@ -219,72 +289,80 @@ def train_with_precomputed_features(args, config):
         hidden_dim=args.hidden_dim
     ).to(device)
 
-    # Pre-compute features
-    print("\n[Step 1/2] Pre-computing training features...")
-    train_features, train_labels = precompute_features(
-        extractor, train_loader, device, use_fp16
-    )
+    trainable_extractor = has_trainable_extractor(extractor)
+    optim_params = list(classifier.parameters())
+    if trainable_extractor:
+        trainable_params = [param for param in extractor.parameters() if param.requires_grad]
+        optim_params.extend(trainable_params)
+        print(f"Trainable fusion params: {sum(param.numel() for param in trainable_params):,}")
 
-    print("\n[Step 2/2] Pre-computing test features...")
-    test_features, test_labels = precompute_features(
-        extractor, test_loader, device, use_fp16
-    )
-
-    print(f"\nTrain features: {train_features.shape}")
-    print(f"Test features: {test_features.shape}")
-
-    # Free extractor memory
-    del extractor
-    torch.cuda.empty_cache()
-
-    # Create feature loaders (num_workers=0 for in-memory data)
-    train_feat_loader = torch.utils.data.DataLoader(
-        torch.utils.data.TensorDataset(train_features, train_labels),
-        batch_size=args.batch_size, shuffle=True, num_workers=0
-    )
-    test_feat_loader = torch.utils.data.DataLoader(
-        torch.utils.data.TensorDataset(test_features, test_labels),
-        batch_size=args.batch_size, shuffle=False, num_workers=0
-    )
-
-    # Training
-    optimizer = AdamW(classifier.parameters(), lr=args.lr, weight_decay=0.01)
+    optimizer = AdamW(optim_params, lr=args.lr, weight_decay=0.01)
     scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs)
     criterion = nn.CrossEntropyLoss()
 
     best_acc = 0.0
 
     print("\n" + "=" * 60)
-    print("Starting training...")
+    print("Starting training (offline cache mode)...")
     print("=" * 60)
 
     for epoch in range(args.epochs):
+        if hasattr(train_loader.sampler, "set_epoch"):
+            train_loader.sampler.set_epoch(epoch)
+
+        if trainable_extractor:
+            extractor.train()
+        else:
+            extractor.eval()
         classifier.train()
         train_loss = 0.0
         train_correct = 0
         train_total = 0
 
-        pbar = tqdm(train_feat_loader, desc=f"Epoch {epoch+1}/{args.epochs}")
-        for features, labels in pbar:
-            features = features.to(device, non_blocking=True)
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs}")
+        for cached_inputs, labels in pbar:
+            cached_inputs = move_to_device(cached_inputs, device)
             labels = labels.to(device, non_blocking=True)
 
             optimizer.zero_grad()
 
-            if use_fp16:
-                with autocast():
+            if trainable_extractor:
+                if use_fp16:
+                    with autocast():
+                        features = extractor.forward_from_cache(cached_inputs)
+                        outputs = classifier(features)
+                        loss = criterion(outputs, labels)
+                    scaler.scale(loss).backward()
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    features = extractor.forward_from_cache(cached_inputs)
                     outputs = classifier(features)
                     loss = criterion(outputs, labels)
-                scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
+                    loss.backward()
+                    optimizer.step()
             else:
-                outputs = classifier(features)
-                loss = criterion(outputs, labels)
-                loss.backward()
-                optimizer.step()
+                with torch.no_grad():
+                    if use_fp16:
+                        with autocast():
+                            features = extractor.forward_from_cache(cached_inputs)
+                    else:
+                        features = extractor.forward_from_cache(cached_inputs)
 
-            train_loss += loss.item() * features.size(0)
+                if use_fp16:
+                    with autocast():
+                        outputs = classifier(features)
+                        loss = criterion(outputs, labels)
+                    scaler.scale(loss).backward()
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    outputs = classifier(features)
+                    loss = criterion(outputs, labels)
+                    loss.backward()
+                    optimizer.step()
+
+            train_loss += loss.item() * labels.size(0)
             _, predicted = outputs.max(1)
             train_total += labels.size(0)
             train_correct += predicted.eq(labels).sum().item()
@@ -298,18 +376,21 @@ def train_with_precomputed_features(args, config):
 
         # Evaluate
         classifier.eval()
+        extractor.eval()
         test_correct = 0
         test_total = 0
 
         with torch.no_grad():
-            for features, labels in test_feat_loader:
-                features = features.to(device, non_blocking=True)
+            for cached_inputs, labels in test_loader:
+                cached_inputs = move_to_device(cached_inputs, device)
                 labels = labels.to(device, non_blocking=True)
 
                 if use_fp16:
                     with autocast():
+                        features = extractor.forward_from_cache(cached_inputs)
                         outputs = classifier(features)
                 else:
+                    features = extractor.forward_from_cache(cached_inputs)
                     outputs = classifier(features)
 
                 _, predicted = outputs.max(1)
@@ -321,9 +402,13 @@ def train_with_precomputed_features(args, config):
 
         if test_acc > best_acc:
             best_acc = test_acc
-            torch.save(classifier.state_dict(), get_checkpoint_name(args))
+            save_offline_checkpoint(args, classifier, extractor)
 
         print(f"Epoch {epoch+1}: Train {train_acc:.2f}% | Test {test_acc:.2f}% | Best {best_acc:.2f}%")
+
+    if args.cleanup_cache:
+        cleanup_cache_dir(cache_root)
+        print(f"\nRemoved offline cache: {cache_root}")
 
     return best_acc
 
@@ -493,10 +578,6 @@ def main():
         args.fusion_model_list = None
         args.loader_model_type = args.model
 
-    if is_trainable_fusion(args) and not args.no_precompute:
-        print("\n[Info] Trainable fusion is enabled; switching to online mode (--no_precompute).")
-        args.no_precompute = True
-
     # CUDA optimizations
     if torch.cuda.is_available():
         torch.backends.cudnn.benchmark = True
@@ -526,8 +607,12 @@ def main():
             print(f"Unified fusion output dim: {args.fusion_output_dim}")
         print(f"Fusion trainable: {is_trainable_fusion(args)}")
     print(f"Seed: {args.seed}")
-    print(f"Precompute: {not args.no_precompute}")
+    print(f"Offline cache mode: {not args.no_precompute}")
     print(f"Mixed precision (fp16): {args.fp16}")
+    print(f"Cache dir: {args.cache_dir}")
+    print(f"Cache dtype: {args.cache_dtype}")
+    print(f"Rebuild cache: {args.rebuild_cache}")
+    print(f"Cleanup cache: {args.cleanup_cache}")
     print(f"Batch size: {args.batch_size}")
     print("=" * 60)
 
@@ -537,7 +622,7 @@ def main():
 
     # Train
     if not args.no_precompute:
-        best_acc = train_with_precomputed_features(args, config)
+        best_acc = train_with_offline_cache(args, config)
     else:
         best_acc = train_online(args, config)
 
