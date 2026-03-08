@@ -2,66 +2,143 @@
 
 使用 HuggingFace Transformers 的预训练模型提取特征，配合 MLP 分类器。
 
-## 快速开始 (AutoDL 服务器)
+## 国内环境推荐流程
+
+下面这套流程按中国大陆网络环境写，目标是：
+
+1. 依赖安装尽量走国内镜像
+2. Hugging Face 模型下载走镜像或本地代理
+3. 数据、模型、缓存统一放到一个大目录里
+
+先选一个大文件目录，下面统一用：
 
 ```bash
-# 1. 克隆代码
-git clone https://github.com/yibol9768-alt/Quantifying-Representation-Reliability.git
+export STORAGE_DIR=/path/to/bigfiles
+mkdir -p "$STORAGE_DIR"
+```
+
+### 第 1 步：先开代理或镜像
+
+如果你本机或服务器已经有代理，先在当前终端导出。把下面的 `127.0.0.1:7890` 替换成你自己的代理地址：
+
+```bash
+export http_proxy=http://127.0.0.1:7890
+export https_proxy=http://127.0.0.1:7890
+export all_proxy=socks5://127.0.0.1:7890
+```
+
+Hugging Face 模型建议再加一个国内镜像：
+
+```bash
+export HF_ENDPOINT=https://hf-mirror.com
+```
+
+如果你没有代理，只想先试镜像，也可以只执行上一条 `HF_ENDPOINT`。
+
+### 第 2 步：克隆代码
+
+```bash
+git clone --branch test --single-branch \
+    https://github.com/yibol9768-alt/Quantifying-Representation-Reliability.git
 cd Quantifying-Representation-Reliability
-git checkout test
+```
 
-# 2. 安装依赖
-pip install -r requirements.txt
+### 第 3 步：创建环境并安装依赖
 
-# 3. 下载模型和数据集 (首次运行)
-python download_models.py --all --storage_dir /path/to/bigfiles
+推荐直接用下面这一组命令。`pip` 走清华镜像，通常比默认源稳。
 
-# 4. 开始训练
-python main.py --dataset cifar100 --model mae \
-    --storage_dir /path/to/bigfiles \
+```bash
+conda create -n feature_cls python=3.10 -y
+conda activate feature_cls
+
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt \
+    -i https://pypi.tuna.tsinghua.edu.cn/simple
+```
+
+安装完成后建议先检查一下：
+
+```bash
+python -c "import torch, torchvision, transformers; print(torch.__version__)"
+```
+
+### 第 4 步：下载模型和数据
+
+如果你当前只做 `CIFAR-100`，推荐直接执行这两条：
+
+```bash
+python download_models.py --models --storage_dir "$STORAGE_DIR"
+python download_models.py --cifar100 --storage_dir "$STORAGE_DIR"
+```
+
+如果你想一次把模型、`CIFAR-10`、`CIFAR-100` 都下齐：
+
+```bash
+python download_models.py --all --storage_dir "$STORAGE_DIR"
+```
+
+### 第 5 步：检查文件是否真的下好了
+
+至少检查这几个目录：
+
+```bash
+ls "$STORAGE_DIR/models"
+ls "$STORAGE_DIR/data"
+ls "$STORAGE_DIR/data/cifar100"
+```
+
+正常情况下你应该能看到：
+
+```text
+$STORAGE_DIR/models/vit-mae-base
+$STORAGE_DIR/models/clip-vit-base-patch16
+$STORAGE_DIR/models/dinov2-base
+$STORAGE_DIR/data/cifar100/train
+$STORAGE_DIR/data/cifar100/test
+```
+
+### 第 6 步：先跑一个最简单的 CIFAR-100 单模型
+
+```bash
+python main.py --dataset cifar100 --model clip \
+    --storage_dir "$STORAGE_DIR" \
     --epochs 50 --batch_size 128 --cache_dtype fp32
 ```
 
-## 环境配置
+第一次运行会先构建离线缓存，后面重复跑同配置会直接复用缓存。
+
+### 第 7 步：如果想加速
+
+默认是 `fp32` 全精度。显存或速度有压力时，再加：
 
 ```bash
-# 创建环境
-conda create -n feature_cls python=3.10
-conda activate feature_cls
-
-# 安装依赖
-pip install -r requirements.txt
+--fp16
 ```
 
-## 一键下载
+例如：
 
 ```bash
-# 下载所有模型和数据集
-python download_models.py --all --storage_dir /path/to/bigfiles
-
-# 只下载模型
-python download_models.py --models --storage_dir /path/to/bigfiles
-
-# 只下载 CIFAR-100
-python download_models.py --cifar100 --storage_dir /path/to/bigfiles
-
-# 只下载 CIFAR-10
-python download_models.py --cifar10 --storage_dir /path/to/bigfiles
+python main.py --dataset cifar100 --model clip \
+    --storage_dir "$STORAGE_DIR" \
+    --epochs 50 --batch_size 128 --cache_dtype fp32 --fp16
 ```
 
-## 手动下载 (可选)
+## 手动下载（可选）
 
-### 模型
+如果自动脚本下载模型失败，可以手动执行：
 
 ```bash
-# 国内镜像加速
 export HF_ENDPOINT=https://hf-mirror.com
 
-# 下载模型
-huggingface-cli download facebook/vit-mae-base --local-dir /path/to/bigfiles/models/vit-mae-base
-huggingface-cli download openai/clip-vit-base-patch16 --local-dir /path/to/bigfiles/models/clip-vit-base-patch16
-huggingface-cli download facebook/dinov2-base --local-dir /path/to/bigfiles/models/dinov2-base
+huggingface-cli download facebook/vit-mae-base \
+    --local-dir "$STORAGE_DIR/models/vit-mae-base"
+huggingface-cli download openai/clip-vit-base-patch16 \
+    --local-dir "$STORAGE_DIR/models/clip-vit-base-patch16"
+huggingface-cli download facebook/dinov2-base \
+    --local-dir "$STORAGE_DIR/models/dinov2-base"
 ```
+
+自动脚本下载的数据会被整理成下面这种目录结构。
 
 ### 数据集格式
 
@@ -282,6 +359,82 @@ python main.py --dataset cifar100 --model dino \
 # 训练完成后删除缓存文件
 python main.py --dataset cifar10 --model clip \
     --storage_dir /path/to/bigfiles --cleanup_cache
+```
+
+## 常见问题（国内环境）
+
+### 1. `pip install` 很慢或超时
+
+优先确认你是不是用了国内镜像：
+
+```bash
+python -m pip install -r requirements.txt \
+    -i https://pypi.tuna.tsinghua.edu.cn/simple
+```
+
+### 2. Hugging Face 模型下载失败
+
+先确认这两个环境变量已经在当前终端生效：
+
+```bash
+echo $https_proxy
+echo $HF_ENDPOINT
+```
+
+推荐至少有一项：
+
+```bash
+export https_proxy=http://127.0.0.1:7890
+export HF_ENDPOINT=https://hf-mirror.com
+```
+
+### 3. `git clone` 很慢或连不上
+
+先确认代理已经导出，然后重新开一个终端执行：
+
+```bash
+export http_proxy=http://127.0.0.1:7890
+export https_proxy=http://127.0.0.1:7890
+git clone --branch test --single-branch \
+    https://github.com/yibol9768-alt/Quantifying-Representation-Reliability.git
+```
+
+### 4. 训练时报 `Model not found`
+
+这通常说明模型没有下载到 `--storage_dir/models` 下。先检查：
+
+```bash
+ls "$STORAGE_DIR/models"
+```
+
+如果目录不对，重新下载：
+
+```bash
+python download_models.py --models --storage_dir "$STORAGE_DIR"
+```
+
+### 5. 训练时报 `Dataset not found`
+
+这通常说明数据没有下载到 `--storage_dir/data/cifar100`。先检查：
+
+```bash
+ls "$STORAGE_DIR/data/cifar100"
+```
+
+如果没有 `train/` 和 `test/`，重新执行：
+
+```bash
+python download_models.py --cifar100 --storage_dir "$STORAGE_DIR"
+```
+
+### 6. 当前终端不想再走代理
+
+执行：
+
+```bash
+unset http_proxy
+unset https_proxy
+unset all_proxy
 ```
 
 ## 预期结果
