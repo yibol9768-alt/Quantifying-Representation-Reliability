@@ -29,8 +29,8 @@ def parse_args():
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--data_dir", type=str, default="./data")
     parser.add_argument("--num_workers", type=int, default=4)
-    parser.add_argument("--precompute", action="store_true",
-                        help="Pre-compute features for faster training")
+    parser.add_argument("--no_precompute", action="store_true",
+                        help="Disable pre-computing features (slower, but more realistic)")
     parser.add_argument("--fp16", action="store_true",
                         help="Use mixed precision (faster on modern GPUs)")
 
@@ -372,7 +372,7 @@ def main():
     print("=" * 60)
     print(f"Dataset: {args.dataset} ({config.num_classes} classes)")
     print(f"Model: {args.model}")
-    print(f"Precompute: {args.precompute}")
+    print(f"Precompute: {not args.no_precompute}")
     print(f"Mixed precision (fp16): {args.fp16}")
     print(f"Batch size: {args.batch_size}")
     print("=" * 60)
@@ -382,7 +382,7 @@ def main():
         print(f"CUDA version: {torch.version.cuda}")
 
     # Train
-    if args.precompute:
+    if not args.no_precompute:
         best_acc = train_with_precomputed_features(args, config)
     else:
         best_acc = train_online(args, config)
