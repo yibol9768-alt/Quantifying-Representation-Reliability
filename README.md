@@ -2,6 +2,24 @@
 
 使用 HuggingFace Transformers 的预训练模型提取特征，配合 MLP 分类器。
 
+## 快速开始 (AutoDL 服务器)
+
+```bash
+# 1. 克隆代码
+git clone https://github.com/yibol9768-alt/Quantifying-Representation-Reliability.git
+cd Quantifying-Representation-Reliability
+git checkout test
+
+# 2. 安装依赖
+pip install -r requirements.txt
+
+# 3. 下载模型和数据集 (首次运行)
+python download_models.py --all
+
+# 4. 开始训练
+python main.py --dataset cifar100 --model mae --epochs 50 --precompute --fp16
+```
+
 ## 环境配置
 
 ```bash
@@ -13,95 +31,49 @@ conda activate feature_cls
 pip install -r requirements.txt
 ```
 
-## 手动下载
-
-### 1. 下载模型
+## 一键下载
 
 ```bash
-# 创建模型目录
-mkdir -p models
+# 下载所有模型和数据集
+python download_models.py --all
 
-# MAE (ViT-Base)
+# 只下载模型
+python download_models.py --models
+
+# 只下载 CIFAR-100
+python download_models.py --cifar100
+
+# 只下载 CIFAR-10
+python download_models.py --cifar10
+```
+
+## 手动下载 (可选)
+
+### 模型
+
+```bash
+# 国内镜像加速
+export HF_ENDPOINT=https://hf-mirror.com
+
+# 下载模型
 huggingface-cli download facebook/vit-mae-base --local-dir models/vit-mae-base
-
-# CLIP (ViT-B/16)
 huggingface-cli download openai/clip-vit-base-patch16 --local-dir models/clip-vit-base-patch16
-
-# DINOv2 (ViT-Base)
 huggingface-cli download facebook/dinov2-base --local-dir models/dinov2-base
 ```
 
-或者使用镜像：
-
-```bash
-# 设置镜像 (国内)
-export HF_ENDPOINT=https://hf-mirror.com
-
-# 然后下载
-huggingface-cli download facebook/vit-mae-base --local-dir models/vit-mae-base
-```
-
-### 2. 下载数据集
-
-数据集放到 `data/` 目录，格式如下：
+### 数据集格式
 
 ```
 data/
 ├── cifar10/
 │   ├── train/
 │   │   ├── airplane/
-│   │   ├── automobile/
 │   │   └── ...
 │   └── test/
-│       ├── airplane/
-│       └── ...
 ├── cifar100/
 │   ├── train/
 │   └── test/
-└── flowers102/
-    ├── train/
-    └── test/
-```
-
-#### 数据集下载链接
-
-| 数据集 | 下载地址 | 格式转换 |
-|--------|----------|----------|
-| CIFAR-10 | [官网](https://www.cs.toronto.edu/~kriz/cifar-10-python.tar.gz) | 需转换为图像文件夹 |
-| CIFAR-100 | [官网](https://www.cs.toronto.edu/~kriz/cifar-100-python.tar.gz) | 需转换为图像文件夹 |
-| STL-10 | [官网](https://cs.stanford.edu/~acoates/stl10/) | 需转换为图像文件夹 |
-| Tiny ImageNet | [下载](http://cs231n.stanford.edu/tiny-imagenet-200.zip) | 解压即可 |
-| Flowers-102 | [官网](https://www.robots.ox.ac.uk/~vgg/data/flowers/102/) | 需整理为 train/test |
-| Food-101 | [官网](https://data.vision.ee.ethz.ch/cvl/food-101.tar.gz) | 解压即可 |
-| Oxford Pets | [官网](https://www.robots.ox.ac.uk/~vgg/data/pets/) | 需整理 |
-| CUB-200 | [官网](https://data.caltech.edu/records/65de2-v2p15) | 需整理 |
-
-#### CIFAR 转换脚本
-
-```python
-# convert_cifar.py
-import torchvision
-from PIL import Image
-from pathlib import Path
-
-def convert_cifar(name, data_dir, output_dir):
-    """Convert CIFAR to image folders."""
-    train_set = torchvision.datasets.CIFAR10(data_dir, train=True, download=False)
-    test_set = torchvision.datasets.CIFAR10(data_dir, train=False, download=False)
-
-    for split, dataset in [("train", train_set), ("test", test_set)]:
-        split_dir = Path(output_dir) / name / split
-        for i in range(len(dataset)):
-            img, label = dataset[i]
-            class_name = dataset.classes[label]
-            class_dir = split_dir / class_name
-            class_dir.mkdir(parents=True, exist_ok=True)
-            img.save(class_dir / f"{i}.png")
-
-    print(f"Converted {name} to {output_dir}/{name}")
-
-# 使用
-convert_cifar("cifar10", "./raw_data", "./data")
+└── ...
 ```
 
 ## 目录结构
