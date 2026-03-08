@@ -45,6 +45,7 @@ class CLIPMultiLayerModel(CLIPModel):
 
         with torch.no_grad():
             visual = self.model.visual
+            images = images.to(visual.conv1.weight.dtype)
             x = visual.conv1(images)  # [B, C, H, W]
             x = x.reshape(x.shape[0], x.shape[1], -1).permute(0, 2, 1)  # [B, N, C]
 
