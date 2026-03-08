@@ -103,53 +103,101 @@ project/
     └── ...
 ```
 
-## 使用方法
+## CIFAR-100 运行命令
+
+默认推荐：
 
 ```bash
-# 基本用法
-python main.py --dataset cifar100 --model mae --epochs 50
+--epochs 50 --batch_size 128 --cache_dtype fp32
+```
 
-# 在线提特征训练 (仅调试时使用)
-python main.py --dataset cifar100 --model mae --no_precompute --epochs 50
+首次运行会先构建离线缓存；之后只要不加 `--rebuild_cache`，并且不加 `--cleanup_cache`，同配置会直接复用缓存。
+默认不启用 `--fp16`，也就是全精度训练与缓存；如果显存或速度有压力，再额外加 `--fp16`。
 
-# 融合: concat (2 模型)
+### 单模型
+
+```bash
+# MAE
+python main.py --dataset cifar100 --model mae \
+    --epochs 50 --batch_size 128 --cache_dtype fp32
+
+# CLIP
+python main.py --dataset cifar100 --model clip \
+    --epochs 50 --batch_size 128 --cache_dtype fp32
+
+# DINO
+python main.py --dataset cifar100 --model dino \
+    --epochs 50 --batch_size 128 --cache_dtype fp32
+```
+
+### 多模型融合
+
+```bash
+# Concat: clip + dino
 python main.py --dataset cifar100 --model fusion \
-    --fusion_method concat --fusion_models clip,dino --epochs 50
+    --fusion_method concat --fusion_models clip,dino \
+    --epochs 50 --batch_size 128 --cache_dtype fp32
 
-# 融合: COMM token-level (2 模型, 默认离线缓存)
-python main.py --dataset cifar100 --model fusion \
-    --fusion_method comm --fusion_models clip,dino --epochs 50
-
-# 融合: MMViT token-level (3 模型, 默认离线缓存)
-python main.py --dataset cifar100 --model fusion \
-    --fusion_method mmvit --fusion_models mae,clip,dino --epochs 50
-
-# 横向对比（推荐）：三种方法同维度、同训练协议、同seed
+# Concat: mae + clip + dino
 python main.py --dataset cifar100 --model fusion \
     --fusion_method concat --fusion_models mae,clip,dino \
-    --fusion_output_dim 1024 --seed 42 --epochs 50
+    --epochs 50 --batch_size 128 --cache_dtype fp32
+
+# COMM: clip + dino
+python main.py --dataset cifar100 --model fusion \
+    --fusion_method comm --fusion_models clip,dino \
+    --epochs 50 --batch_size 128 --cache_dtype fp32
+
+# COMM: mae + clip + dino
 python main.py --dataset cifar100 --model fusion \
     --fusion_method comm --fusion_models mae,clip,dino \
-    --fusion_output_dim 1024 --seed 42 --epochs 50
+    --epochs 50 --batch_size 128 --cache_dtype fp32
+
+# MMViT: clip + dino
+python main.py --dataset cifar100 --model fusion \
+    --fusion_method mmvit --fusion_models clip,dino \
+    --epochs 50 --batch_size 128 --cache_dtype fp32
+
+# MMViT: mae + clip + dino
 python main.py --dataset cifar100 --model fusion \
     --fusion_method mmvit --fusion_models mae,clip,dino \
-    --fusion_output_dim 1024 --seed 42 --epochs 50
+    --epochs 50 --batch_size 128 --cache_dtype fp32
+```
 
-# 完整参数
-python main.py \
-    --dataset cifar100 \
-    --model fusion \
-    --fusion_method mmvit \
-    --fusion_models mae,clip,dino \
-    --epochs 50 \
-    --lr 0.001 \
-    --batch_size 128 \
-    --hidden_dim 512 \
-    --device cuda:0 \
-    --cache_dir ./cache/offline \
-    --cache_dtype fp32 \
-    --cleanup_cache \
-    --fp16
+### 横向对比
+
+```bash
+# 三种融合方法统一输出维度、统一 seed
+python main.py --dataset cifar100 --model fusion \
+    --fusion_method concat --fusion_models mae,clip,dino \
+    --fusion_output_dim 1024 --seed 42 \
+    --epochs 50 --batch_size 128 --cache_dtype fp32
+
+python main.py --dataset cifar100 --model fusion \
+    --fusion_method comm --fusion_models mae,clip,dino \
+    --fusion_output_dim 1024 --seed 42 \
+    --epochs 50 --batch_size 128 --cache_dtype fp32
+
+python main.py --dataset cifar100 --model fusion \
+    --fusion_method mmvit --fusion_models mae,clip,dino \
+    --fusion_output_dim 1024 --seed 42 \
+    --epochs 50 --batch_size 128 --cache_dtype fp32
+```
+
+### 常用附加选项
+
+```bash
+# 强制重建缓存
+--rebuild_cache
+
+# 训练结束后删除缓存文件
+--cleanup_cache
+
+# 关闭离线缓存，改为在线提特征
+--no_precompute
+
+# 开启混合精度加速
+--fp16
 ```
 
 ## 模型说明
