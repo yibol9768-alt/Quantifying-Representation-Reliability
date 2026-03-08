@@ -1,7 +1,57 @@
-"""Configuration for CIFAR-100 experiments."""
+"""Configuration for feature classification experiments."""
 
-from dataclasses import dataclass
-from typing import List, Optional
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional
+
+
+# Dataset configurations
+DATASET_CONFIGS = {
+    "cifar10": {
+        "num_classes": 10,
+        "img_size": 32,
+        "description": "CIFAR-10: 10 classes, 32x32 images"
+    },
+    "cifar100": {
+        "num_classes": 100,
+        "img_size": 32,
+        "description": "CIFAR-100: 100 classes, 32x32 images"
+    },
+    "stl10": {
+        "num_classes": 10,
+        "img_size": 96,
+        "description": "STL-10: 10 classes, 96x96 images"
+    },
+    "tiny_imagenet": {
+        "num_classes": 200,
+        "img_size": 64,
+        "description": "Tiny ImageNet: 200 classes, 64x64 images"
+    },
+    "caltech101": {
+        "num_classes": 101,
+        "img_size": 224,
+        "description": "Caltech-101: 101 object categories"
+    },
+    "flowers102": {
+        "num_classes": 102,
+        "img_size": 224,
+        "description": "Oxford Flowers-102: 102 flower categories"
+    },
+    "food101": {
+        "num_classes": 101,
+        "img_size": 224,
+        "description": "Food-101: 101 food categories"
+    },
+    "pets": {
+        "num_classes": 37,
+        "img_size": 224,
+        "description": "Oxford-IIIT Pets: 37 pet breeds"
+    },
+    "cub200": {
+        "num_classes": 200,
+        "img_size": 224,
+        "description": "CUB-200-2011: 200 bird species"
+    },
+}
 
 
 @dataclass
@@ -10,6 +60,9 @@ class Config:
 
     # Model settings
     model_type: str = "mae"  # mae, clip, dino, fusion
+
+    # Dataset settings
+    dataset: str = "cifar100"
 
     # Training settings
     epochs: int = 50
@@ -30,11 +83,11 @@ class Config:
     device: str = "cuda:0"
 
     # Feature dimensions
-    FEATURE_DIMS = {
+    FEATURE_DIMS: Dict = field(default_factory=lambda: {
         "mae": 768,
         "clip": 512,
         "dino": 768,
-    }
+    })
 
     @property
     def feature_dim(self) -> int:
@@ -43,5 +96,25 @@ class Config:
             return sum(self.FEATURE_DIMS.values())  # 2048
         return self.FEATURE_DIMS.get(self.model_type, 768)
 
-    # CIFAR-100 classes
-    NUM_CLASSES: int = 100
+    @property
+    def num_classes(self) -> int:
+        """Get number of classes for current dataset."""
+        return DATASET_CONFIGS.get(self.dataset, {}).get("num_classes", 100)
+
+    @property
+    def dataset_info(self) -> str:
+        """Get dataset description."""
+        return DATASET_CONFIGS.get(self.dataset, {}).get("description", "Unknown dataset")
+
+    @staticmethod
+    def list_datasets() -> List[str]:
+        """List all available datasets."""
+        return list(DATASET_CONFIGS.keys())
+
+    @staticmethod
+    def get_dataset_info() -> str:
+        """Get formatted dataset information."""
+        lines = ["Available datasets:"]
+        for name, info in DATASET_CONFIGS.items():
+            lines.append(f"  - {name}: {info['description']}")
+        return "\n".join(lines)
