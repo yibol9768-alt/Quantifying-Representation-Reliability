@@ -17,7 +17,7 @@ pip install -r requirements.txt
 python download_models.py --all
 
 # 4. 开始训练
-python main.py --dataset cifar100 --model mae --epochs 50 --precompute --fp16
+python main.py --dataset cifar100 --model mae --epochs 50 --fp16
 ```
 
 ## 环境配置
@@ -109,22 +109,45 @@ project/
 # 基本用法
 python main.py --dataset cifar100 --model mae --epochs 50
 
-# 预计算特征 (更快)
-python main.py --dataset cifar100 --model mae --precompute --epochs 50
+# 在线提特征训练 (关闭预计算)
+python main.py --dataset cifar100 --model mae --no_precompute --epochs 50
 
-# 融合模型
-python main.py --dataset cifar100 --model fusion --epochs 50
+# 融合: concat (2 模型)
+python main.py --dataset cifar100 --model fusion \
+    --fusion_method concat --fusion_models clip,dino --epochs 50
+
+# 融合: COMM token-level (2 模型)
+python main.py --dataset cifar100 --model fusion \
+    --fusion_method comm --fusion_models clip,dino --epochs 50 --no_precompute
+
+# 融合: MMViT token-level (3 模型)
+python main.py --dataset cifar100 --model fusion \
+    --fusion_method mmvit --fusion_models mae,clip,dino --epochs 50 --no_precompute
+
+# 横向对比（推荐）：三种方法同维度、同训练协议、同seed
+python main.py --dataset cifar100 --model fusion \
+    --fusion_method concat --fusion_models mae,clip,dino \
+    --fusion_output_dim 1024 --seed 42 --epochs 50
+python main.py --dataset cifar100 --model fusion \
+    --fusion_method comm --fusion_models mae,clip,dino \
+    --fusion_output_dim 1024 --seed 42 --epochs 50
+python main.py --dataset cifar100 --model fusion \
+    --fusion_method mmvit --fusion_models mae,clip,dino \
+    --fusion_output_dim 1024 --seed 42 --epochs 50
 
 # 完整参数
 python main.py \
     --dataset cifar100 \
-    --model mae \
+    --model fusion \
+    --fusion_method mmvit \
+    --fusion_models mae,clip,dino \
     --epochs 50 \
     --lr 0.001 \
     --batch_size 128 \
     --hidden_dim 512 \
     --device cuda:0 \
-    --precompute
+    --no_precompute \
+    --fp16
 ```
 
 ## 模型说明
@@ -132,22 +155,23 @@ python main.py \
 | 模型 | 参数 | 特征维度 | 本地路径 |
 |------|------|----------|----------|
 | MAE | `--model mae` | 768 | `models/vit-mae-base` |
-| CLIP | `--model clip` | 512 | `models/clip-vit-base-patch16` |
+| CLIP | `--model clip` | 768 | `models/clip-vit-base-patch16` |
 | DINO | `--model dino` | 768 | `models/dinov2-base` |
-| Fusion | `--model fusion` | 2048 | 拼接以上三个 |
+| Fusion | `--model fusion` | 取决于融合方法与模型数 | 支持 2 模型 / 3 模型 |
 
-## Fusion 实现
+## Fusion 方法
 
-```python
-# 简单拼接 + L2 归一化
-features = []
-for name in ["mae", "clip", "dino"]:
-    feat = extractors[name](images)
-    feat = feat / feat.norm(dim=-1, keepdim=True)  # 归一化
-    features.append(feat)
+| 方法 | 参数 | 粒度 | 说明 |
+|------|------|------|------|
+| Concat | `--fusion_method concat` | 全局特征 | L2 归一化后拼接 |
+| COMM | `--fusion_method comm` | Token 级 | 严格复现 `LLN+LayerScale`（CLIP 全层、DINO 深层）+ DINO MLP 对齐 + 最终线性投影 |
+| MMViT | `--fusion_method mmvit` | Token 级 | 严格复现 4-stage 16-block 结构（`[0,0,9,1]`）、cross-attn 与 scaled self-attn |
 
-fused = torch.cat(features, dim=-1)  # 768+512+768=2048
-```
+> 默认开启融合横向对比模式（harmonization）：  
+> 1) 三种方法统一输出维度 `--fusion_output_dim`；  
+> 2) 三种方法统一在线训练协议（自动 `--no_precompute`）；  
+> 3) 统一随机种子 `--seed`。  
+> 若需要关闭，使用 `--disable_fusion_harmonization`。
 
 ## 预期结果
 

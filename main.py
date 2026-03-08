@@ -1,6 +1,7 @@
 """Main entry point - optimized for GPU."""
 
 import argparse
+import random
 import torch
 import torch.nn as nn
 from torch.optim import AdamW
@@ -22,6 +23,27 @@ def parse_args():
                         choices=list(DATASET_CONFIGS.keys()))
     parser.add_argument("--model", type=str, default="mae",
                         choices=["mae", "clip", "dino", "fusion"])
+    parser.add_argument("--fusion_method", type=str, default="concat",
+                        choices=["concat", "comm", "mmvit"],
+                        help="Fusion method when --model fusion")
+    parser.add_argument("--fusion_models", type=str, default="mae,clip,dino",
+                        help="Comma-separated model list for fusion, e.g. clip,dino or mae,clip,dino")
+    parser.add_argument("--fusion_output_dim", type=int, default=1024,
+                        help="Unified fusion output dim for fair horizontal comparison")
+    parser.add_argument("--disable_fusion_harmonization", action="store_true",
+                        help="Disable fair-comparison harmonization for fusion methods")
+    parser.add_argument("--comm_dino_mlp_blocks", type=int, default=2,
+                        help="COMM: number of residual MLP blocks for DINO/text-space alignment")
+    parser.add_argument("--comm_dino_mlp_ratio", type=float, default=8.0,
+                        help="COMM: expansion ratio of each DINO MLP block")
+    parser.add_argument("--mmvit_base_dim", type=int, default=96,
+                        help="MMViT: base embedding dim of stage-1")
+    parser.add_argument("--mmvit_mlp_ratio", type=float, default=4.0,
+                        help="MMViT: MLP expansion ratio in attention blocks")
+    parser.add_argument("--mmvit_num_heads", type=int, default=8,
+                        help="MMViT: preferred number of attention heads per stage")
+    parser.add_argument("--mmvit_max_position_tokens", type=int, default=256,
+                        help="MMViT: reference length of learnable positional embeddings")
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--batch_size", type=int, default=128)
@@ -29,12 +51,87 @@ def parse_args():
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--data_dir", type=str, default="./data")
     parser.add_argument("--num_workers", type=int, default=4)
+    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--no_precompute", action="store_true",
                         help="Disable pre-computing features (slower, but more realistic)")
     parser.add_argument("--fp16", action="store_true",
                         help="Use mixed precision (faster on modern GPUs)")
 
     return parser.parse_args()
+
+
+def parse_fusion_models(fusion_models: str):
+    """Parse fusion model list from CLI."""
+    valid_models = {"mae", "clip", "dino"}
+    models = [name.strip().lower() for name in fusion_models.split(",") if name.strip()]
+
+    # Preserve order while removing duplicates.
+    seen = set()
+    unique_models = []
+    for name in models:
+        if name not in seen:
+            unique_models.append(name)
+            seen.add(name)
+
+    if not unique_models:
+        raise ValueError("fusion_models is empty. Example: --fusion_models clip,dino")
+    if any(name not in valid_models for name in unique_models):
+        raise ValueError(f"Invalid model in fusion_models: {unique_models}. Valid: {sorted(valid_models)}")
+    if len(unique_models) < 2:
+        raise ValueError("Fusion requires at least 2 models.")
+    if len(unique_models) > 3:
+        raise ValueError("At most 3 models are supported.")
+
+    return unique_models
+
+
+def get_checkpoint_name(args) -> str:
+    """Build checkpoint name."""
+    if args.model == "fusion":
+        model_tag = "-".join(args.fusion_model_list)
+        if use_fusion_harmonization(args):
+            return (
+                f"{args.dataset}_fusion-{args.fusion_method}_{model_tag}"
+                f"_dim{args.fusion_output_dim}_best.pth"
+            )
+        return f"{args.dataset}_fusion-{args.fusion_method}_{model_tag}_best.pth"
+    return f"{args.dataset}_{args.model}_best.pth"
+
+
+def get_fusion_kwargs(args) -> dict:
+    """Build fusion kwargs from CLI arguments."""
+    return {
+        "comm_dino_mlp_blocks": args.comm_dino_mlp_blocks,
+        "comm_dino_mlp_ratio": args.comm_dino_mlp_ratio,
+        "mmvit_base_dim": args.mmvit_base_dim,
+        "mmvit_mlp_ratio": args.mmvit_mlp_ratio,
+        "mmvit_num_heads": args.mmvit_num_heads,
+        "mmvit_max_position_tokens": args.mmvit_max_position_tokens,
+        "fusion_output_dim": args.fusion_output_dim if use_fusion_harmonization(args) else None,
+    }
+
+
+def is_trainable_fusion(args) -> bool:
+    """Whether current setup uses trainable fusion modules."""
+    if args.model != "fusion":
+        return False
+    # In harmonized mode, concat has a trainable projection for fair comparison.
+    if use_fusion_harmonization(args):
+        return True
+    return args.fusion_method in {"comm", "mmvit"}
+
+
+def use_fusion_harmonization(args) -> bool:
+    """Whether to harmonize fusion settings for fair horizontal comparison."""
+    return args.model == "fusion" and (not args.disable_fusion_harmonization)
+
+
+def set_random_seed(seed: int):
+    """Set random seed for fair and reproducible comparisons."""
+    random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 def print_gpu_usage():
@@ -100,12 +197,17 @@ def train_with_precomputed_features(args, config):
     # Load data
     print(f"\nLoading dataset {args.dataset}...")
     train_loader, test_loader = get_dataloaders(
-        args.dataset, args.data_dir, args.batch_size, args.num_workers, args.model
+        args.dataset, args.data_dir, args.batch_size, args.num_workers, args.loader_model_type
     )
 
     # Feature extractor
     print(f"\nLoading {args.model} model...")
-    extractor = get_extractor(args.model).to(device)
+    extractor = get_extractor(
+        args.model,
+        fusion_method=args.fusion_method,
+        fusion_models=args.fusion_model_list,
+        fusion_kwargs=get_fusion_kwargs(args),
+    ).to(device)
     extractor.eval()
     print(f"Feature dimension: {extractor.feature_dim}")
     print_gpu_usage()
@@ -219,7 +321,7 @@ def train_with_precomputed_features(args, config):
 
         if test_acc > best_acc:
             best_acc = test_acc
-            torch.save(classifier.state_dict(), f"{args.dataset}_{args.model}_best.pth")
+            torch.save(classifier.state_dict(), get_checkpoint_name(args))
 
         print(f"Epoch {epoch+1}: Train {train_acc:.2f}% | Test {test_acc:.2f}% | Best {best_acc:.2f}%")
 
@@ -239,13 +341,22 @@ def train_online(args, config):
     # Load data
     print(f"\nLoading dataset {args.dataset}...")
     train_loader, test_loader = get_dataloaders(
-        args.dataset, args.data_dir, args.batch_size, args.num_workers, args.model
+        args.dataset, args.data_dir, args.batch_size, args.num_workers, args.loader_model_type
     )
 
     # Feature extractor
     print(f"\nLoading {args.model} model...")
-    extractor = get_extractor(args.model).to(device)
-    extractor.eval()
+    extractor = get_extractor(
+        args.model,
+        fusion_method=args.fusion_method,
+        fusion_models=args.fusion_model_list,
+        fusion_kwargs=get_fusion_kwargs(args),
+    ).to(device)
+    fusion_trainable = is_trainable_fusion(args)
+    if fusion_trainable:
+        extractor.train()
+    else:
+        extractor.eval()
     print(f"Feature dimension: {extractor.feature_dim}")
     print_gpu_usage()
 
@@ -257,7 +368,13 @@ def train_online(args, config):
     ).to(device)
 
     # Training
-    optimizer = AdamW(classifier.parameters(), lr=args.lr, weight_decay=0.01)
+    optim_params = list(classifier.parameters())
+    if fusion_trainable:
+        trainable_extractor_params = [p for p in extractor.parameters() if p.requires_grad]
+        optim_params.extend(trainable_extractor_params)
+        print(f"Trainable fusion params: {sum(p.numel() for p in trainable_extractor_params):,}")
+
+    optimizer = AdamW(optim_params, lr=args.lr, weight_decay=0.01)
     scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs)
     criterion = nn.CrossEntropyLoss()
 
@@ -278,29 +395,43 @@ def train_online(args, config):
             images = images.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True)
 
-            # Extract features
-            with torch.no_grad():
+            optimizer.zero_grad()
+
+            if fusion_trainable:
                 if use_fp16:
                     with autocast():
                         features = extractor(images)
+                        outputs = classifier(features)
+                        loss = criterion(outputs, labels)
+                    scaler.scale(loss).backward()
+                    scaler.step(optimizer)
+                    scaler.update()
                 else:
                     features = extractor(images)
-
-            # Train classifier
-            optimizer.zero_grad()
-
-            if use_fp16:
-                with autocast():
                     outputs = classifier(features)
                     loss = criterion(outputs, labels)
-                scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
+                    loss.backward()
+                    optimizer.step()
             else:
-                outputs = classifier(features)
-                loss = criterion(outputs, labels)
-                loss.backward()
-                optimizer.step()
+                with torch.no_grad():
+                    if use_fp16:
+                        with autocast():
+                            features = extractor(images)
+                    else:
+                        features = extractor(images)
+
+                if use_fp16:
+                    with autocast():
+                        outputs = classifier(features)
+                        loss = criterion(outputs, labels)
+                    scaler.scale(loss).backward()
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    outputs = classifier(features)
+                    loss = criterion(outputs, labels)
+                    loss.backward()
+                    optimizer.step()
 
             train_loss += loss.item() * images.size(0)
             _, predicted = outputs.max(1)
@@ -316,6 +447,7 @@ def train_online(args, config):
 
         # Evaluate
         classifier.eval()
+        extractor.eval()
         test_correct = 0
         test_total = 0
 
@@ -336,12 +468,14 @@ def train_online(args, config):
                 test_total += labels.size(0)
                 test_correct += predicted.eq(labels).sum().item()
 
+        if fusion_trainable:
+            extractor.train()
         train_acc = 100. * train_correct / train_total
         test_acc = 100. * test_correct / test_total
 
         if test_acc > best_acc:
             best_acc = test_acc
-            torch.save(classifier.state_dict(), f"{args.dataset}_{args.model}_best.pth")
+            torch.save(classifier.state_dict(), get_checkpoint_name(args))
 
         print(f"Epoch {epoch+1}: Train {train_acc:.2f}% | Test {test_acc:.2f}% | Best {best_acc:.2f}%")
 
@@ -350,6 +484,18 @@ def train_online(args, config):
 
 def main():
     args = parse_args()
+    set_random_seed(args.seed)
+
+    if args.model == "fusion":
+        args.fusion_model_list = parse_fusion_models(args.fusion_models)
+        args.loader_model_type = "fusion"
+    else:
+        args.fusion_model_list = None
+        args.loader_model_type = args.model
+
+    if is_trainable_fusion(args) and not args.no_precompute:
+        print("\n[Info] Trainable fusion is enabled; switching to online mode (--no_precompute).")
+        args.no_precompute = True
 
     # CUDA optimizations
     if torch.cuda.is_available():
@@ -372,6 +518,14 @@ def main():
     print("=" * 60)
     print(f"Dataset: {args.dataset} ({config.num_classes} classes)")
     print(f"Model: {args.model}")
+    if args.model == "fusion":
+        print(f"Fusion method: {args.fusion_method}")
+        print(f"Fusion models: {args.fusion_model_list}")
+        print(f"Fusion harmonization: {use_fusion_harmonization(args)}")
+        if use_fusion_harmonization(args):
+            print(f"Unified fusion output dim: {args.fusion_output_dim}")
+        print(f"Fusion trainable: {is_trainable_fusion(args)}")
+    print(f"Seed: {args.seed}")
     print(f"Precompute: {not args.no_precompute}")
     print(f"Mixed precision (fp16): {args.fp16}")
     print(f"Batch size: {args.batch_size}")

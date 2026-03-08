@@ -85,7 +85,7 @@ class Config:
     # Feature dimensions
     FEATURE_DIMS: Dict = field(default_factory=lambda: {
         "mae": 768,
-        "clip": 512,
+        "clip": 768,
         "dino": 768,
     })
 
@@ -93,7 +93,7 @@ class Config:
     def feature_dim(self) -> int:
         """Get feature dimension based on model type."""
         if self.model_type == "fusion":
-            return sum(self.FEATURE_DIMS.values())  # 2048
+            return sum(self.FEATURE_DIMS.values())  # default 2304 (mae+clip+dino)
         return self.FEATURE_DIMS.get(self.model_type, 768)
 
     @property

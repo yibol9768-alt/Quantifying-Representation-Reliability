@@ -1,17 +1,95 @@
-"""Feature extractors using HuggingFace Transformers - offline mode."""
+"""Feature extractors and strict paper-style fusion modules in offline mode."""
 
+import math
 import os
+from pathlib import Path
+from typing import Dict, List, Optional, Sequence, Tuple
+
 os.environ["HF_HUB_OFFLINE"] = "1"  # Force offline mode
 
 import torch
 import torch.nn as nn
-from transformers import (
-    AutoModel,
-    AutoImageProcessor,
-    ViTMAEModel,
-    CLIPVisionModel,
-    Dinov2Model,
-)
+import torch.nn.functional as F
+from transformers import AutoImageProcessor, CLIPVisionModel, Dinov2Model, ViTMAEModel
+
+
+def _infer_square_size(num_tokens: int) -> Optional[int]:
+    side = int(math.sqrt(num_tokens))
+    if side * side == num_tokens:
+        return side
+    return None
+
+
+def _resize_tokens(tokens: torch.Tensor, target_tokens: int) -> torch.Tensor:
+    """Resize patch tokens to a target length while preserving 2D layout if possible."""
+    target_tokens = max(1, int(target_tokens))
+    if tokens.size(1) == target_tokens:
+        return tokens
+
+    side_in = _infer_square_size(tokens.size(1))
+    side_out = _infer_square_size(target_tokens)
+
+    if side_in is not None and side_out is not None:
+        bsz, _, dim = tokens.shape
+        x = tokens.transpose(1, 2).reshape(bsz, dim, side_in, side_in)
+        x = F.interpolate(x, size=(side_out, side_out), mode="bilinear", align_corners=False)
+        return x.flatten(2).transpose(1, 2)
+
+    x = tokens.transpose(1, 2)  # [B, D, N]
+    x = F.adaptive_avg_pool1d(x, target_tokens)
+    return x.transpose(1, 2)
+
+
+def _split_cls_token(tokens: torch.Tensor, has_cls: bool) -> Tuple[Optional[torch.Tensor], torch.Tensor]:
+    if has_cls and tokens.size(1) > 0:
+        return tokens[:, :1], tokens[:, 1:]
+    return None, tokens
+
+
+def _merge_cls_token(cls_token: Optional[torch.Tensor], patch_tokens: torch.Tensor) -> torch.Tensor:
+    if cls_token is None:
+        return patch_tokens
+    return torch.cat([cls_token, patch_tokens], dim=1)
+
+
+def _apply_depthwise_pool(tokens: torch.Tensor, has_cls: bool, pool: nn.Conv2d) -> torch.Tensor:
+    """Apply depthwise 2D pooling on token map; fallback to 1D pooling for non-square tokens."""
+    cls_token, patches = _split_cls_token(tokens, has_cls)
+    if patches.size(1) == 0:
+        return tokens
+
+    side = _infer_square_size(patches.size(1))
+    if side is not None:
+        bsz, _, dim = patches.shape
+        x = patches.transpose(1, 2).reshape(bsz, dim, side, side)
+        x = pool(x)
+        pooled = x.flatten(2).transpose(1, 2)
+    else:
+        stride_h, stride_w = pool.stride
+        reduce = max(1, int(stride_h) * int(stride_w))
+        target_tokens = max(1, patches.size(1) // reduce)
+        pooled = _resize_tokens(patches, target_tokens)
+
+    return _merge_cls_token(cls_token, pooled)
+
+
+def _add_positional_embedding(tokens: torch.Tensor, pos_embed: torch.Tensor) -> torch.Tensor:
+    if pos_embed.size(1) != tokens.size(1):
+        pos_embed = F.interpolate(
+            pos_embed.transpose(1, 2),
+            size=tokens.size(1),
+            mode="linear",
+            align_corners=False,
+        ).transpose(1, 2)
+    return tokens + pos_embed
+
+
+def _valid_num_heads(dim: int, preferred: int) -> int:
+    preferred = max(1, min(preferred, dim))
+    for h in range(preferred, 0, -1):
+        if dim % h == 0:
+            return h
+    return 1
 
 
 class FeatureExtractor(nn.Module):
@@ -20,17 +98,16 @@ class FeatureExtractor(nn.Module):
     Models must be downloaded manually. See README for download instructions.
     """
 
-    # Local model paths
     MODEL_PATHS = {
         "mae": {
-            "path": "./models/vit-mae-base",  # Local path
+            "path": "./models/vit-mae-base",
             "hf_name": "facebook/vit-mae-base",
             "dim": 768,
         },
         "clip": {
             "path": "./models/clip-vit-base-patch16",
             "hf_name": "openai/clip-vit-base-patch16",
-            "dim": 512,
+            "dim": 768,
         },
         "dino": {
             "path": "./models/dinov2-base",
@@ -39,17 +116,17 @@ class FeatureExtractor(nn.Module):
         },
     }
 
-    def __init__(self, model_type: str = "mae"):
+    def __init__(self, model_type: str = "mae", normalize_input: bool = False):
         super().__init__()
+        if model_type not in self.MODEL_PATHS:
+            raise ValueError(f"Unsupported model type: {model_type}")
+
         self.model_type = model_type
-
+        self.normalize_input = normalize_input
         config = self.MODEL_PATHS[model_type]
-        model_path = config["path"]
-        self.feature_dim = config["dim"]
+        model_path = Path(config["path"])
 
-        # Check if model exists locally
-        from pathlib import Path
-        if not Path(model_path).exists():
+        if not model_path.exists():
             raise FileNotFoundError(
                 f"Model not found at {model_path}\n"
                 f"Please download manually:\n"
@@ -57,73 +134,639 @@ class FeatureExtractor(nn.Module):
                 f"See README for details."
             )
 
-        # Load model from local path
         if model_type == "mae":
-            self.model = ViTMAEModel.from_pretrained(model_path, local_files_only=True)
+            self.model = ViTMAEModel.from_pretrained(str(model_path), local_files_only=True)
         elif model_type == "clip":
-            self.model = CLIPVisionModel.from_pretrained(model_path, local_files_only=True)
-        elif model_type == "dino":
-            self.model = Dinov2Model.from_pretrained(model_path, local_files_only=True)
+            self.model = CLIPVisionModel.from_pretrained(str(model_path), local_files_only=True)
+        else:
+            self.model = Dinov2Model.from_pretrained(str(model_path), local_files_only=True)
 
-        self.processor = AutoImageProcessor.from_pretrained(model_path, local_files_only=True)
+        self.processor = AutoImageProcessor.from_pretrained(str(model_path), local_files_only=True)
 
-        # Freeze backbone
+        image_mean = self.processor.image_mean if self.processor.image_mean is not None else [0.485, 0.456, 0.406]
+        image_std = self.processor.image_std if self.processor.image_std is not None else [0.229, 0.224, 0.225]
+        if len(image_mean) == 1:
+            image_mean = image_mean * 3
+        if len(image_std) == 1:
+            image_std = image_std * 3
+        self.register_buffer("_image_mean", torch.tensor(image_mean).view(1, -1, 1, 1), persistent=False)
+        self.register_buffer("_image_std", torch.tensor(image_std).view(1, -1, 1, 1), persistent=False)
+
         self.model.eval()
         for param in self.model.parameters():
             param.requires_grad = False
 
+        self.token_dim = getattr(self.model.config, "hidden_size", config["dim"])
+        self.feature_dim = self.token_dim
+        self.num_hidden_layers = int(getattr(self.model.config, "num_hidden_layers", 12))
+
+    def _maybe_normalize(self, pixel_values: torch.Tensor) -> torch.Tensor:
+        if not self.normalize_input:
+            return pixel_values
+
+        x = pixel_values
+        if x.size(1) == 1:
+            x = x.repeat(1, 3, 1, 1)
+
+        mean = self._image_mean.to(device=x.device, dtype=x.dtype)
+        std = self._image_std.to(device=x.device, dtype=x.dtype)
+        return (x - mean) / (std + 1e-6)
+
+    @staticmethod
+    def _split_cls_and_patches(sequence: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        if sequence.size(1) <= 1:
+            return sequence[:, 0], sequence.new_zeros(sequence.size(0), 0, sequence.size(-1))
+        return sequence[:, 0], sequence[:, 1:]
+
+    @torch.no_grad()
+    def _run_model(self, pixel_values: torch.Tensor, output_hidden_states: bool = False):
+        x = self._maybe_normalize(pixel_values)
+        return self.model(pixel_values=x, output_hidden_states=output_hidden_states)
+
     @torch.no_grad()
     def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
-        """Extract features from images."""
-        outputs = self.model(pixel_values=pixel_values)
-
-        if self.model_type == "mae":
-            return outputs.last_hidden_state[:, 0]
-        elif self.model_type == "clip":
+        """Extract a single global feature vector."""
+        outputs = self._run_model(pixel_values, output_hidden_states=False)
+        if hasattr(outputs, "pooler_output") and outputs.pooler_output is not None:
             return outputs.pooler_output
-        elif self.model_type == "dino":
-            return outputs.last_hidden_state[:, 0]
-        else:
-            if hasattr(outputs, "pooler_output") and outputs.pooler_output is not None:
-                return outputs.pooler_output
-            return outputs.last_hidden_state[:, 0]
-
-
-class MultiModelExtractor(nn.Module):
-    """Extract and fuse features from multiple models.
-
-    Fusion strategy: concatenation of L2-normalized features.
-    """
-
-    def __init__(self, model_types: list = ["mae", "clip", "dino"]):
-        super().__init__()
-        self.model_types = model_types
-
-        self.extractors = nn.ModuleDict({
-            name: FeatureExtractor(name) for name in model_types
-        })
-
-        self.feature_dim = sum(
-            FeatureExtractor.MODEL_PATHS[name]["dim"]
-            for name in model_types
-        )
+        return outputs.last_hidden_state[:, 0]
 
     @torch.no_grad()
+    def extract_last_tokens(self, pixel_values: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """Extract CLS token and patch tokens from the last layer."""
+        outputs = self._run_model(pixel_values, output_hidden_states=False)
+        cls_token, patch_tokens = self._split_cls_and_patches(outputs.last_hidden_state)
+        return {"cls": cls_token, "patches": patch_tokens}
+
+    @torch.no_grad()
+    def extract_hidden_tokens(self, pixel_values: torch.Tensor) -> List[torch.Tensor]:
+        """Extract patch tokens from all hidden layers (excluding embedding layer)."""
+        outputs = self._run_model(pixel_values, output_hidden_states=True)
+        hidden_states = outputs.hidden_states
+
+        if hidden_states is None:
+            return [self._split_cls_and_patches(outputs.last_hidden_state)[1]]
+
+        token_layers: List[torch.Tensor] = []
+        for hidden in hidden_states[1:]:
+            _, patch_tokens = self._split_cls_and_patches(hidden)
+            token_layers.append(patch_tokens)
+        return token_layers
+
+
+class MultiModelConcatExtractor(nn.Module):
+    """Baseline fusion: concatenate L2-normalized global features."""
+
+    def __init__(self, model_types: Sequence[str], output_dim: Optional[int] = None):
+        super().__init__()
+        self.model_types = list(model_types)
+        if len(self.model_types) < 2:
+            raise ValueError("Fusion requires at least two models.")
+
+        self.extractors = nn.ModuleDict({
+            name: FeatureExtractor(name, normalize_input=True) for name in self.model_types
+        })
+        self.concat_dim = sum(self.extractors[name].feature_dim for name in self.model_types)
+        if output_dim is not None:
+            self.output_proj = nn.Sequential(nn.LayerNorm(self.concat_dim), nn.Linear(self.concat_dim, output_dim))
+            self.feature_dim = output_dim
+            self.trainable = True
+        else:
+            self.output_proj = nn.Identity()
+            self.feature_dim = self.concat_dim
+            self.trainable = False
+
     def forward(self, pixel_values: torch.Tensor, normalize: bool = True) -> torch.Tensor:
-        """Extract and fuse features."""
         features = []
         for name in self.model_types:
             feat = self.extractors[name](pixel_values)
             if normalize:
                 feat = feat / (feat.norm(dim=-1, keepdim=True) + 1e-8)
             features.append(feat)
+        fused = torch.cat(features, dim=-1)
+        return self.output_proj(fused)
 
-        return torch.cat(features, dim=-1)
+
+class TokenMLP(nn.Module):
+    """Token-wise MLP with residual path."""
+
+    def __init__(self, dim: int, expand_ratio: float = 4.0):
+        super().__init__()
+        hidden_dim = int(dim * expand_ratio)
+        self.norm = nn.LayerNorm(dim)
+        self.fc1 = nn.Linear(dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, dim)
+        self.act = nn.GELU()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x + self.fc2(self.act(self.fc1(self.norm(x))))
 
 
-def get_extractor(model_type: str) -> nn.Module:
-    """Factory function to create feature extractor."""
-    if model_type == "fusion":
-        return MultiModelExtractor(["mae", "clip", "dino"])
-    else:
-        return FeatureExtractor(model_type)
+class COMMStrictFusionExtractor(nn.Module):
+    """Strict COMM-style fusion with LLN-LayerScale + DINO MLP alignment."""
+
+    def __init__(
+        self,
+        model_types: Sequence[str],
+        dino_mlp_blocks: int = 2,
+        dino_mlp_ratio: float = 8.0,
+        output_dim: Optional[int] = None,
+    ):
+        super().__init__()
+        self.model_types = list(model_types)
+        if len(self.model_types) < 2:
+            raise ValueError("COMM fusion requires at least two models.")
+
+        self.extractors = nn.ModuleDict({
+            name: FeatureExtractor(name, normalize_input=True) for name in self.model_types
+        })
+
+        self.layer_indices: Dict[str, List[int]] = {}
+        self.lln_modules = nn.ModuleDict()
+        self.layer_scale_logits = nn.ParameterDict()
+        self.aligners = nn.ModuleDict()
+
+        branch_dims = []
+        for name in self.model_types:
+            depth = self.extractors[name].num_hidden_layers
+            indices = self._select_layer_indices(name, depth)
+            self.layer_indices[name] = indices
+
+            dim = self.extractors[name].token_dim
+            lln_list = nn.ModuleList([
+                nn.Sequential(nn.LayerNorm(dim), nn.Linear(dim, dim))
+                for _ in indices
+            ])
+            self.lln_modules[name] = lln_list
+            self.layer_scale_logits[name] = nn.Parameter(torch.zeros(len(indices)))
+
+            if name == "dino":
+                self.aligners[name] = self._build_mlp_aligner(dim, dino_mlp_blocks, dino_mlp_ratio)
+            elif name == "clip":
+                self.aligners[name] = nn.Identity()
+            else:
+                # For optional 3rd model branch, keep aligned with DINO-style MLP.
+                self.aligners[name] = self._build_mlp_aligner(dim, dino_mlp_blocks, dino_mlp_ratio)
+
+            branch_dims.append(dim)
+
+        self.concat_dim = sum(branch_dims)
+        self.final_norm = nn.LayerNorm(self.concat_dim)
+        target_dim = self.concat_dim if output_dim is None else output_dim
+        self.final_proj = nn.Linear(self.concat_dim, target_dim)
+        self.feature_dim = target_dim
+        self.trainable = True
+
+    @staticmethod
+    def _build_mlp_aligner(dim: int, num_blocks: int, ratio: float) -> nn.Module:
+        if num_blocks <= 0:
+            return nn.Identity()
+        return nn.Sequential(*[TokenMLP(dim, ratio) for _ in range(num_blocks)])
+
+    @staticmethod
+    def _select_layer_indices(model_name: str, depth: int) -> List[int]:
+        if depth <= 0:
+            return [0]
+        if model_name == "clip":
+            # Paper uses all CLIP layers.
+            return list(range(depth))
+        if model_name == "dino":
+            # Paper uses deep DINO layers (19~24 for ViT-L), adapted as "last 6 layers".
+            keep = min(6, depth)
+            return list(range(depth - keep, depth))
+        return list(range(depth))
+
+    def _merge_model_layers(self, model_name: str, token_layers: List[torch.Tensor]) -> torch.Tensor:
+        indices = self.layer_indices[model_name]
+        modules = self.lln_modules[model_name]
+        if len(indices) != len(modules):
+            raise RuntimeError(f"Layer config mismatch for {model_name}.")
+
+        transformed_layers = []
+        for module, idx in zip(modules, indices):
+            idx = max(0, min(idx, len(token_layers) - 1))
+            transformed_layers.append(module(token_layers[idx]))
+
+        stacked = torch.stack(transformed_layers, dim=0)  # [L, B, N, D]
+        weights = torch.softmax(self.layer_scale_logits[model_name], dim=0).view(-1, 1, 1, 1)
+        merged = (stacked * weights).sum(dim=0)
+        return self.aligners[model_name](merged)
+
+    def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
+        branch_tokens: List[torch.Tensor] = []
+        target_tokens: Optional[int] = None
+
+        for name in self.model_types:
+            token_layers = self.extractors[name].extract_hidden_tokens(pixel_values)
+            merged = self._merge_model_layers(name, token_layers)
+            branch_tokens.append(merged)
+            target_tokens = merged.size(1) if target_tokens is None else min(target_tokens, merged.size(1))
+
+        assert target_tokens is not None
+        aligned = [_resize_tokens(tokens, target_tokens) for tokens in branch_tokens]
+
+        fused = torch.cat(aligned, dim=-1)
+        fused = self.final_proj(self.final_norm(fused))
+        return fused.mean(dim=1)
+
+
+class MultiHeadPoolingAttention(nn.Module):
+    """Multi-head pooling attention used in MMViT self/cross blocks."""
+
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int,
+        q_stride: int = 1,
+        kv_stride: int = 1,
+        pool_kernel: int = 3,
+        out_dim: Optional[int] = None,
+    ):
+        super().__init__()
+        out_dim = dim if out_dim is None else out_dim
+        self.dim = dim
+        self.out_dim = out_dim
+        self.num_heads = _valid_num_heads(dim, num_heads)
+        self.head_dim = dim // self.num_heads
+        self.scale = self.head_dim ** -0.5
+
+        self.q_proj = nn.Linear(dim, dim)
+        self.k_proj = nn.Linear(dim, dim)
+        self.v_proj = nn.Linear(dim, dim)
+        self.out_proj = nn.Linear(dim, out_dim)
+
+        padding = pool_kernel // 2
+        self.q_pool = nn.Conv2d(
+            dim, dim, kernel_size=pool_kernel, stride=q_stride, padding=padding, groups=dim, bias=False
+        )
+        self.k_pool = nn.Conv2d(
+            dim, dim, kernel_size=pool_kernel, stride=kv_stride, padding=padding, groups=dim, bias=False
+        )
+        self.v_pool = nn.Conv2d(
+            dim, dim, kernel_size=pool_kernel, stride=kv_stride, padding=padding, groups=dim, bias=False
+        )
+
+    def _reshape_heads(self, x: torch.Tensor) -> torch.Tensor:
+        bsz, seq_len, _ = x.shape
+        x = x.view(bsz, seq_len, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+        return x
+
+    def forward(self, x: torch.Tensor, has_cls: bool = False) -> torch.Tensor:
+        q = _apply_depthwise_pool(self.q_proj(x), has_cls, self.q_pool)
+        k = _apply_depthwise_pool(self.k_proj(x), has_cls, self.k_pool)
+        v = _apply_depthwise_pool(self.v_proj(x), has_cls, self.v_pool)
+
+        qh = self._reshape_heads(q)
+        kh = self._reshape_heads(k)
+        vh = self._reshape_heads(v)
+
+        attn = torch.matmul(qh, kh.transpose(-2, -1)) * self.scale
+        attn = torch.softmax(attn, dim=-1)
+
+        out = torch.matmul(attn, vh)
+        out = out.permute(0, 2, 1, 3).reshape(out.size(0), out.size(2), self.dim)
+        return self.out_proj(out)
+
+
+class TokenDownsample(nn.Module):
+    """Residual path downsample for scaled self-attention blocks."""
+
+    def __init__(self, in_dim: int, out_dim: int, stride: int):
+        super().__init__()
+        self.pool = None
+        if stride > 1:
+            self.pool = nn.Conv2d(
+                in_dim, in_dim, kernel_size=3, stride=stride, padding=1, groups=in_dim, bias=False
+            )
+        self.proj = nn.Linear(in_dim, out_dim) if in_dim != out_dim else nn.Identity()
+
+    def forward(self, x: torch.Tensor, has_cls: bool = False) -> torch.Tensor:
+        if self.pool is not None:
+            x = _apply_depthwise_pool(x, has_cls, self.pool)
+        return self.proj(x)
+
+
+class MMViTSelfBlock(nn.Module):
+    """Self-attention block; scaled block uses stride-2 pooling and channel doubling."""
+
+    def __init__(
+        self,
+        dim: int,
+        out_dim: int,
+        num_heads: int,
+        mlp_ratio: float = 4.0,
+        scaled: bool = False,
+    ):
+        super().__init__()
+        stride = 2 if scaled else 1
+        self.norm1 = nn.LayerNorm(dim)
+        self.attn = MultiHeadPoolingAttention(
+            dim=dim,
+            num_heads=num_heads,
+            q_stride=stride,
+            kv_stride=1,
+            pool_kernel=3,
+            out_dim=out_dim,
+        )
+        self.skip = TokenDownsample(in_dim=dim, out_dim=out_dim, stride=stride)
+        self.norm2 = nn.LayerNorm(out_dim)
+        self.mlp = TokenMLP(out_dim, mlp_ratio)
+
+    def forward(self, x: torch.Tensor, has_cls: bool = False) -> torch.Tensor:
+        attn_out = self.attn(self.norm1(x), has_cls=has_cls)
+        x = self.skip(x, has_cls=has_cls) + attn_out
+        x = x + self.mlp(self.norm2(x))
+        return x
+
+
+class MMViTCrossBlock(nn.Module):
+    """Cross-attention block fusing multiple views at the same scale stage."""
+
+    def __init__(self, num_views: int, dim: int, num_heads: int, mlp_ratio: float = 4.0):
+        super().__init__()
+        self.num_views = num_views
+        self.num_heads = _valid_num_heads(dim, num_heads)
+        self.head_dim = dim // self.num_heads
+        self.scale = self.head_dim ** -0.5
+
+        self.pre_norm = nn.ModuleList([nn.LayerNorm(dim) for _ in range(num_views)])
+        self.q_proj = nn.ModuleList([nn.Linear(dim, dim) for _ in range(num_views)])
+        self.k_proj = nn.ModuleList([nn.Linear(dim, dim) for _ in range(num_views)])
+        self.v_proj = nn.ModuleList([nn.Linear(dim, dim) for _ in range(num_views)])
+
+        self.q_pool = nn.ModuleList([
+            nn.Conv2d(dim, dim, kernel_size=3, stride=1, padding=1, groups=dim, bias=False)
+            for _ in range(num_views)
+        ])
+        self.k_pool = nn.ModuleList([
+            nn.Conv2d(dim, dim, kernel_size=3, stride=1, padding=1, groups=dim, bias=False)
+            for _ in range(num_views)
+        ])
+        self.v_pool = nn.ModuleList([
+            nn.Conv2d(dim, dim, kernel_size=3, stride=1, padding=1, groups=dim, bias=False)
+            for _ in range(num_views)
+        ])
+
+        self.out_proj = nn.Linear(dim, dim)
+        self.post_norm = nn.ModuleList([nn.LayerNorm(dim) for _ in range(num_views)])
+        self.mlps = nn.ModuleList([TokenMLP(dim, mlp_ratio) for _ in range(num_views)])
+
+    def _reshape_heads(self, x: torch.Tensor) -> torch.Tensor:
+        bsz, seq_len, dim = x.shape
+        x = x.view(bsz, seq_len, self.num_heads, dim // self.num_heads).permute(0, 2, 1, 3)
+        return x
+
+    def forward(self, views: List[torch.Tensor], has_cls_flags: List[bool]) -> List[torch.Tensor]:
+        q_list, k_list, v_list = [], [], []
+        lengths = []
+
+        for idx in range(self.num_views):
+            x = self.pre_norm[idx](views[idx])
+            q = _apply_depthwise_pool(self.q_proj[idx](x), has_cls_flags[idx], self.q_pool[idx])
+            k = _apply_depthwise_pool(self.k_proj[idx](x), has_cls_flags[idx], self.k_pool[idx])
+            v = _apply_depthwise_pool(self.v_proj[idx](x), has_cls_flags[idx], self.v_pool[idx])
+            q_list.append(q)
+            k_list.append(k)
+            v_list.append(v)
+            lengths.append(q.size(1))
+
+        q_cat = torch.cat(q_list, dim=1)
+        k_cat = torch.cat(k_list, dim=1)
+        v_cat = torch.cat(v_list, dim=1)
+
+        qh = self._reshape_heads(q_cat)
+        kh = self._reshape_heads(k_cat)
+        vh = self._reshape_heads(v_cat)
+
+        attn = torch.matmul(qh, kh.transpose(-2, -1)) * self.scale
+        attn = torch.softmax(attn, dim=-1)
+        out = torch.matmul(attn, vh)
+        out = out.permute(0, 2, 1, 3).reshape(out.size(0), out.size(2), q_cat.size(-1))
+        out = self.out_proj(out)
+
+        out_views = list(torch.split(out, lengths, dim=1))
+        fused_views: List[torch.Tensor] = []
+        for idx in range(self.num_views):
+            y = views[idx] + out_views[idx]
+            y = y + self.mlps[idx](self.post_norm[idx](y))
+            fused_views.append(y)
+        return fused_views
+
+
+class MMViTStage(nn.Module):
+    """One MMViT scale stage."""
+
+    def __init__(
+        self,
+        num_views: int,
+        dim: int,
+        next_dim: Optional[int],
+        n_self_blocks: int,
+        num_heads: int,
+        mlp_ratio: float = 4.0,
+        with_cross: bool = True,
+        with_scale: bool = True,
+    ):
+        super().__init__()
+        self.num_views = num_views
+        self.self_blocks = nn.ModuleList()
+        for _ in range(n_self_blocks):
+            self.self_blocks.append(nn.ModuleList([
+                MMViTSelfBlock(dim=dim, out_dim=dim, num_heads=num_heads, mlp_ratio=mlp_ratio, scaled=False)
+                for _ in range(num_views)
+            ]))
+
+        self.cross_block = MMViTCrossBlock(num_views, dim, num_heads, mlp_ratio) if with_cross else None
+        self.scale_blocks = None
+        if with_scale:
+            if next_dim is None:
+                raise ValueError("next_dim is required when with_scale=True")
+            self.scale_blocks = nn.ModuleList([
+                MMViTSelfBlock(dim=dim, out_dim=next_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, scaled=True)
+                for _ in range(num_views)
+            ])
+
+    def forward(self, views: List[torch.Tensor], has_cls_flags: List[bool]) -> List[torch.Tensor]:
+        for block_group in self.self_blocks:
+            views = [block_group[i](views[i], has_cls_flags[i]) for i in range(self.num_views)]
+
+        if self.cross_block is not None:
+            views = self.cross_block(views, has_cls_flags)
+
+        if self.scale_blocks is not None:
+            views = [self.scale_blocks[i](views[i], has_cls_flags[i]) for i in range(self.num_views)]
+
+        return views
+
+
+class MMViTStrictFusionExtractor(nn.Module):
+    """Strict MMViT-style multiscale multiview token fusion."""
+
+    def __init__(
+        self,
+        model_types: Sequence[str],
+        base_dim: int = 96,
+        mlp_ratio: float = 4.0,
+        num_heads: int = 8,
+        max_position_tokens: int = 256,
+        output_dim: Optional[int] = None,
+    ):
+        super().__init__()
+        self.model_types = list(model_types)
+        if len(self.model_types) < 2:
+            raise ValueError("MMViT fusion requires at least two models.")
+
+        self.extractors = nn.ModuleDict({
+            name: FeatureExtractor(name, normalize_input=True) for name in self.model_types
+        })
+        self.num_views = len(self.model_types)
+
+        self.input_proj = nn.ModuleDict({
+            name: nn.Linear(self.extractors[name].token_dim, base_dim)
+            for name in self.model_types
+        })
+
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, base_dim))
+        self.pos_embed = nn.ParameterList([
+            nn.Parameter(
+                torch.zeros(1, max_position_tokens + (1 if idx == 0 else 0), base_dim)
+            )
+            for idx in range(self.num_views)
+        ])
+
+        stage_dims = [base_dim, base_dim * 2, base_dim * 4, base_dim * 8]
+        stage_heads = [_valid_num_heads(dim, num_heads) for dim in stage_dims]
+        stage_self_counts = [0, 0, 9, 1]  # Paper: total 16 blocks with stage layout [0,0,9,1].
+
+        self.stages = nn.ModuleList([
+            MMViTStage(
+                num_views=self.num_views,
+                dim=stage_dims[0],
+                next_dim=stage_dims[1],
+                n_self_blocks=stage_self_counts[0],
+                num_heads=stage_heads[0],
+                mlp_ratio=mlp_ratio,
+                with_cross=True,
+                with_scale=True,
+            ),
+            MMViTStage(
+                num_views=self.num_views,
+                dim=stage_dims[1],
+                next_dim=stage_dims[2],
+                n_self_blocks=stage_self_counts[1],
+                num_heads=stage_heads[1],
+                mlp_ratio=mlp_ratio,
+                with_cross=True,
+                with_scale=True,
+            ),
+            MMViTStage(
+                num_views=self.num_views,
+                dim=stage_dims[2],
+                next_dim=stage_dims[3],
+                n_self_blocks=stage_self_counts[2],
+                num_heads=stage_heads[2],
+                mlp_ratio=mlp_ratio,
+                with_cross=True,
+                with_scale=True,
+            ),
+            MMViTStage(
+                num_views=self.num_views,
+                dim=stage_dims[3],
+                next_dim=None,
+                n_self_blocks=stage_self_counts[3],
+                num_heads=stage_heads[3],
+                mlp_ratio=mlp_ratio,
+                with_cross=False,
+                with_scale=False,
+            ),
+        ])
+
+        self.final_norm = nn.LayerNorm(stage_dims[-1])
+        target_dim = stage_dims[-1] if output_dim is None else output_dim
+        self.final_proj = nn.Linear(stage_dims[-1], target_dim)
+        self.feature_dim = target_dim
+        self.trainable = True
+
+    def _build_view_tokens(self, pixel_values: torch.Tensor) -> Tuple[List[torch.Tensor], List[bool]]:
+        patch_tokens = []
+        for name in self.model_types:
+            tokens = self.extractors[name].extract_last_tokens(pixel_values)["patches"]
+            patch_tokens.append(tokens)
+
+        high_res_tokens = patch_tokens[0].size(1)
+        views: List[torch.Tensor] = []
+        has_cls_flags: List[bool] = []
+
+        for idx, name in enumerate(self.model_types):
+            target_tokens = max(4, high_res_tokens // (4 ** idx))
+            tokens = _resize_tokens(patch_tokens[idx], target_tokens)
+            tokens = self.input_proj[name](tokens)
+
+            if idx == 0:
+                cls_token = self.cls_token.expand(tokens.size(0), -1, -1)
+                tokens = torch.cat([cls_token, tokens], dim=1)
+                has_cls_flags.append(True)
+            else:
+                has_cls_flags.append(False)
+
+            tokens = _add_positional_embedding(tokens, self.pos_embed[idx])
+            views.append(tokens)
+
+        return views, has_cls_flags
+
+    def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
+        views, has_cls_flags = self._build_view_tokens(pixel_values)
+        for stage in self.stages:
+            views = stage(views, has_cls_flags)
+
+        # Paper uses CLS from the first view for classification.
+        cls_feature = views[0][:, 0]
+        return self.final_proj(self.final_norm(cls_feature))
+
+
+def get_extractor(
+    model_type: str,
+    fusion_method: str = "concat",
+    fusion_models: Optional[Sequence[str]] = None,
+    fusion_kwargs: Optional[Dict] = None,
+) -> nn.Module:
+    """Factory function to create extractors.
+
+    Args:
+        model_type: Single model type (`mae`, `clip`, `dino`) or `fusion`.
+        fusion_method: One of `concat`, `comm`, `mmvit` when model_type is `fusion`.
+        fusion_models: List of model types for fusion, e.g. ["clip", "dino"].
+        fusion_kwargs: Extra kwargs for strict fusion implementations.
+    """
+    if model_type != "fusion":
+        return FeatureExtractor(model_type, normalize_input=False)
+
+    model_types = list(fusion_models) if fusion_models is not None else ["mae", "clip", "dino"]
+    fusion_method = fusion_method.lower()
+    fusion_kwargs = {} if fusion_kwargs is None else dict(fusion_kwargs)
+
+    if fusion_method == "concat":
+        return MultiModelConcatExtractor(
+            model_types,
+            output_dim=fusion_kwargs.get("fusion_output_dim"),
+        )
+    if fusion_method == "comm":
+        return COMMStrictFusionExtractor(
+            model_types=model_types,
+            dino_mlp_blocks=fusion_kwargs.get("comm_dino_mlp_blocks", 2),
+            dino_mlp_ratio=fusion_kwargs.get("comm_dino_mlp_ratio", 8.0),
+            output_dim=fusion_kwargs.get("fusion_output_dim"),
+        )
+    if fusion_method == "mmvit":
+        return MMViTStrictFusionExtractor(
+            model_types=model_types,
+            base_dim=fusion_kwargs.get("mmvit_base_dim", 96),
+            mlp_ratio=fusion_kwargs.get("mmvit_mlp_ratio", 4.0),
+            num_heads=fusion_kwargs.get("mmvit_num_heads", 8),
+            max_position_tokens=fusion_kwargs.get("mmvit_max_position_tokens", 256),
+            output_dim=fusion_kwargs.get("fusion_output_dim"),
+        )
+
+    raise ValueError(
+        f"Unsupported fusion method: {fusion_method}. Choose from ['concat', 'comm', 'mmvit']."
+    )
