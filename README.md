@@ -102,7 +102,7 @@ $STORAGE_DIR/data/cifar100/test
 ```bash
 python main.py --dataset cifar100 --model clip \
     --storage_dir "$STORAGE_DIR" \
-    --epochs 50 --batch_size 128 --cache_dtype fp32
+    --epochs 10 --batch_size 128 --cache_dtype fp32
 ```
 
 第一次运行会先构建离线缓存，后面重复跑同配置会直接复用缓存。
@@ -120,7 +120,7 @@ python main.py --dataset cifar100 --model clip \
 ```bash
 python main.py --dataset cifar100 --model clip \
     --storage_dir "$STORAGE_DIR" \
-    --epochs 50 --batch_size 128 --cache_dtype fp32 --fp16
+    --epochs 10 --batch_size 128 --cache_dtype fp32 --fp16
 ```
 
 ## 手动下载（可选）
@@ -201,7 +201,7 @@ project/
 默认推荐：
 
 ```bash
---storage_dir /path/to/bigfiles --epochs 50 --batch_size 128 --cache_dtype fp32
+--storage_dir /path/to/bigfiles --epochs 10 --batch_size 128 --cache_dtype fp32
 ```
 
 首次运行会先构建离线缓存；之后只要不加 `--rebuild_cache`，并且不加 `--cleanup_cache`，同配置会直接复用缓存。
@@ -221,17 +221,17 @@ project/
 # MAE
 python main.py --dataset cifar100 --model mae \
     --storage_dir /path/to/bigfiles \
-    --epochs 50 --batch_size 128 --cache_dtype fp32
+    --epochs 10 --batch_size 128 --cache_dtype fp32
 
 # CLIP
 python main.py --dataset cifar100 --model clip \
     --storage_dir /path/to/bigfiles \
-    --epochs 50 --batch_size 128 --cache_dtype fp32
+    --epochs 10 --batch_size 128 --cache_dtype fp32
 
 # DINO
 python main.py --dataset cifar100 --model dino \
     --storage_dir /path/to/bigfiles \
-    --epochs 50 --batch_size 128 --cache_dtype fp32
+    --epochs 10 --batch_size 128 --cache_dtype fp32
 ```
 
 ### 多模型融合
@@ -241,37 +241,37 @@ python main.py --dataset cifar100 --model dino \
 python main.py --dataset cifar100 --model fusion \
     --storage_dir /path/to/bigfiles \
     --fusion_method concat --fusion_models clip,dino \
-    --epochs 50 --batch_size 128 --cache_dtype fp32
+    --epochs 10 --batch_size 128 --cache_dtype fp32
 
 # Concat: mae + clip + dino
 python main.py --dataset cifar100 --model fusion \
     --storage_dir /path/to/bigfiles \
     --fusion_method concat --fusion_models mae,clip,dino \
-    --epochs 50 --batch_size 128 --cache_dtype fp32
+    --epochs 10 --batch_size 128 --cache_dtype fp32
 
 # COMM: clip + dino
 python main.py --dataset cifar100 --model fusion \
     --storage_dir /path/to/bigfiles \
     --fusion_method comm --fusion_models clip,dino \
-    --epochs 50 --batch_size 128 --cache_dtype fp32
+    --epochs 10 --batch_size 128 --cache_dtype fp32
 
 # COMM: mae + clip + dino
 python main.py --dataset cifar100 --model fusion \
     --storage_dir /path/to/bigfiles \
     --fusion_method comm --fusion_models mae,clip,dino \
-    --epochs 50 --batch_size 128 --cache_dtype fp32
+    --epochs 10 --batch_size 128 --cache_dtype fp32
 
 # MMViT: clip + dino
 python main.py --dataset cifar100 --model fusion \
     --storage_dir /path/to/bigfiles \
     --fusion_method mmvit --fusion_models clip,dino \
-    --epochs 50 --batch_size 128 --cache_dtype fp32
+    --epochs 10 --batch_size 128 --cache_dtype fp32
 
 # MMViT: mae + clip + dino
 python main.py --dataset cifar100 --model fusion \
     --storage_dir /path/to/bigfiles \
     --fusion_method mmvit --fusion_models mae,clip,dino \
-    --epochs 50 --batch_size 128 --cache_dtype fp32
+    --epochs 10 --batch_size 128 --cache_dtype fp32
 ```
 
 ### 横向对比
@@ -282,19 +282,19 @@ python main.py --dataset cifar100 --model fusion \
     --storage_dir /path/to/bigfiles \
     --fusion_method concat --fusion_models mae,clip,dino \
     --fusion_output_dim 1024 --seed 42 \
-    --epochs 50 --batch_size 128 --cache_dtype fp32
+    --epochs 10 --batch_size 128 --cache_dtype fp32
 
 python main.py --dataset cifar100 --model fusion \
     --storage_dir /path/to/bigfiles \
     --fusion_method comm --fusion_models mae,clip,dino \
     --fusion_output_dim 1024 --seed 42 \
-    --epochs 50 --batch_size 128 --cache_dtype fp32
+    --epochs 10 --batch_size 128 --cache_dtype fp32
 
 python main.py --dataset cifar100 --model fusion \
     --storage_dir /path/to/bigfiles \
     --fusion_method mmvit --fusion_models mae,clip,dino \
     --fusion_output_dim 1024 --seed 42 \
-    --epochs 50 --batch_size 128 --cache_dtype fp32
+    --epochs 10 --batch_size 128 --cache_dtype fp32
 ```
 
 ### 常用附加选项
@@ -344,7 +344,7 @@ python main.py --dataset cifar100 --model fusion \
 # 统一指定大文件目录
 python main.py --dataset cifar100 --model clip \
     --storage_dir /path/to/bigfiles \
-    --epochs 50 --cache_dtype fp32
+    --epochs 10 --cache_dtype fp32
 
 # 默认使用 fp32 离线缓存
 python main.py --dataset cifar100 --model fusion \
@@ -359,6 +359,23 @@ python main.py --dataset cifar100 --model dino \
 # 训练完成后删除缓存文件
 python main.py --dataset cifar10 --model clip \
     --storage_dir /path/to/bigfiles --cleanup_cache
+```
+
+## 实验结果保存
+
+每次训练都会自动保存三类文件：
+
+- `results/<run_name>.json`：完整实验配置、路径信息、每个 epoch 的指标、最终 summary
+- `results/<run_name>.csv`：每个 epoch 的 `train_loss/train_acc/test_loss/test_acc/best_acc`
+- `*.pth`：最佳 checkpoint
+
+如果传了 `--storage_dir`，默认结果目录会自动变成 `<storage_dir>/results`。也可以手工指定：
+
+```bash
+python main.py --dataset cifar100 --model fusion \
+    --storage_dir /path/to/bigfiles \
+    --results_dir /path/to/exp_results \
+    --fusion_method comm --fusion_models clip,dino
 ```
 
 ## 常见问题（国内环境）

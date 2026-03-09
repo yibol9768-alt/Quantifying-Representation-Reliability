@@ -65,7 +65,7 @@ class Config:
     dataset: str = "cifar100"
 
     # Training settings
-    epochs: int = 50
+    epochs: int = 10
     lr: float = 0.001
     batch_size: int = 128
     weight_decay: float = 0.01

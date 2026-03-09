@@ -1,6 +1,8 @@
 """Main entry point - optimized for GPU."""
 
 import argparse
+import csv
+import json
 import random
 import torch
 import torch.nn as nn
@@ -8,6 +10,7 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.cuda.amp import autocast, GradScaler
 from tqdm import tqdm
+from datetime import datetime
 from pathlib import Path
 
 from configs.config import Config, DATASET_CONFIGS
@@ -25,6 +28,7 @@ from src.training.offline_cache import (
 DEFAULT_MODEL_DIR = "./models"
 DEFAULT_DATA_DIR = "./data"
 DEFAULT_CACHE_DIR = "./cache/offline"
+DEFAULT_RESULTS_DIR = "./results"
 
 
 def parse_args():
@@ -55,7 +59,7 @@ def parse_args():
                         help="MMViT: preferred number of attention heads per stage")
     parser.add_argument("--mmvit_max_position_tokens", type=int, default=256,
                         help="MMViT: reference length of learnable positional embeddings")
-    parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--hidden_dim", type=int, default=512)
@@ -69,6 +73,10 @@ def parse_args():
                         help="Optional fallback: disable offline cache and train from raw images")
     parser.add_argument("--cache_dir", type=str, default=DEFAULT_CACHE_DIR,
                         help="Directory for disk-backed offline caches")
+    parser.add_argument("--results_dir", type=str, default=DEFAULT_RESULTS_DIR,
+                        help="Directory for experiment results (JSON/CSV)")
+    parser.add_argument("--run_name", type=str, default=None,
+                        help="Optional explicit run name for result files")
     parser.add_argument("--cache_dtype", type=str, default="fp32",
                         choices=["fp32", "fp16"],
                         help="Storage dtype for offline cache tensors")
@@ -177,6 +185,8 @@ def resolve_storage_paths(args):
         args.data_dir = str(storage_root / "data")
     if args.cache_dir == DEFAULT_CACHE_DIR:
         args.cache_dir = str(storage_root / "cache" / "offline")
+    if args.results_dir == DEFAULT_RESULTS_DIR:
+        args.results_dir = str(storage_root / "results")
 
 
 def get_cache_storage_dtype(args) -> torch.dtype:
@@ -199,20 +209,163 @@ def get_cache_name(args) -> str:
     return "_".join(parts).replace(".", "p")
 
 
+def sanitize_name(value: str) -> str:
+    """Convert free-form names into filesystem-safe tags."""
+    safe = str(value).strip().replace("/", "-").replace(" ", "_")
+    return safe.replace(".", "p")
+
+
+def get_run_basename(args) -> str:
+    """Build a stable experiment basename before timestamping."""
+    if args.model == "fusion":
+        model_tag = "-".join(args.fusion_model_list)
+        parts = [args.dataset, "fusion", args.fusion_method, model_tag]
+        if use_fusion_harmonization(args):
+            parts.append(f"dim{args.fusion_output_dim}")
+    else:
+        parts = [args.dataset, args.model]
+
+    parts.append(f"seed{args.seed}")
+    parts.append("offline-cache" if not args.no_precompute else "online")
+    return "_".join(sanitize_name(part) for part in parts)
+
+
 def has_trainable_extractor(extractor) -> bool:
     """Check whether the cached extractor still has trainable layers."""
     return any(param.requires_grad for param in extractor.parameters())
 
 
-def save_offline_checkpoint(args, classifier, extractor):
-    """Save classifier and any trainable post-cache fusion layers."""
+def save_training_checkpoint(args, classifier, extractor):
+    """Save classifier and any trainable post-backbone fusion layers."""
     payload = {
         "classifier": classifier.state_dict(),
         "args": vars(args),
     }
     if has_trainable_extractor(extractor):
         payload["extractor"] = extractor.state_dict()
-    torch.save(payload, get_checkpoint_name(args))
+    checkpoint_path = Path(get_checkpoint_name(args))
+    torch.save(payload, checkpoint_path)
+    return checkpoint_path.resolve()
+
+
+def get_learning_rate(optimizer) -> float:
+    """Get the current learning rate from the first param group."""
+    return float(optimizer.param_groups[0]["lr"])
+
+
+def init_result_tracker(args, config, training_mode: str, cache_root: Path | None = None):
+    """Create result files and seed them with run metadata."""
+    results_root = Path(args.results_dir)
+    results_root.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_name = sanitize_name(args.run_name) if args.run_name else f"{get_run_basename(args)}_{timestamp}"
+    json_path = results_root / f"{run_name}.json"
+    csv_path = results_root / f"{run_name}.csv"
+
+    payload = {
+        "run_name": run_name,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "status": "running",
+        "training_mode": training_mode,
+        "dataset": args.dataset,
+        "num_classes": config.num_classes,
+        "model": args.model,
+        "fusion_method": args.fusion_method if args.model == "fusion" else None,
+        "fusion_models": args.fusion_model_list if args.model == "fusion" else None,
+        "checkpoint_path": str(Path(get_checkpoint_name(args)).resolve()),
+        "results_json": str(json_path.resolve()),
+        "results_csv": str(csv_path.resolve()),
+        "storage_dir": args.storage_dir,
+        "model_dir": args.model_dir,
+        "data_dir": args.data_dir,
+        "cache_dir": args.cache_dir,
+        "cache_root": str(cache_root.resolve()) if cache_root is not None else None,
+        "config": vars(args),
+        "history": [],
+        "summary": {},
+    }
+
+    tracker = {
+        "json_path": json_path,
+        "csv_path": csv_path,
+        "payload": payload,
+    }
+    flush_result_tracker(tracker)
+    return tracker
+
+
+def flush_result_tracker(tracker):
+    """Persist result tracker JSON and CSV to disk."""
+    payload = tracker["payload"]
+    with tracker["json_path"].open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+
+    history = payload["history"]
+    fieldnames = [
+        "epoch",
+        "train_loss",
+        "train_acc",
+        "test_loss",
+        "test_acc",
+        "best_acc",
+        "is_best",
+        "lr",
+    ]
+    with tracker["csv_path"].open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in history:
+            writer.writerow({key: row.get(key) for key in fieldnames})
+
+
+def record_epoch_result(
+    tracker,
+    *,
+    epoch: int,
+    train_loss: float,
+    train_acc: float,
+    test_loss: float,
+    test_acc: float,
+    best_acc: float,
+    is_best: bool,
+    optimizer,
+):
+    """Append one epoch of metrics and persist result files."""
+    tracker["payload"]["history"].append({
+        "epoch": int(epoch),
+        "train_loss": float(train_loss),
+        "train_acc": float(train_acc),
+        "test_loss": float(test_loss),
+        "test_acc": float(test_acc),
+        "best_acc": float(best_acc),
+        "is_best": bool(is_best),
+        "lr": get_learning_rate(optimizer),
+    })
+    tracker["payload"]["last_updated_at"] = datetime.now().isoformat(timespec="seconds")
+    flush_result_tracker(tracker)
+
+
+def finalize_result_tracker(
+    tracker,
+    *,
+    best_acc: float,
+    best_epoch: int,
+    checkpoint_path: Path | None,
+    cache_root: Path | None = None,
+    cache_removed: bool = False,
+):
+    """Mark the run complete and store its final summary."""
+    tracker["payload"]["status"] = "completed"
+    tracker["payload"]["completed_at"] = datetime.now().isoformat(timespec="seconds")
+    tracker["payload"]["summary"] = {
+        "best_acc": float(best_acc),
+        "best_epoch": int(best_epoch),
+        "checkpoint_path": str(checkpoint_path) if checkpoint_path is not None else None,
+        "cache_root": str(cache_root.resolve()) if cache_root is not None else None,
+        "cache_removed": bool(cache_removed),
+    }
+    flush_result_tracker(tracker)
 
 
 def build_cached_loaders(args, extractor, device, use_fp16):
@@ -303,6 +456,9 @@ def train_with_offline_cache(args, config):
     print_gpu_usage()
 
     train_loader, test_loader, cache_root = build_cached_loaders(args, extractor, device, use_fp16)
+    result_tracker = init_result_tracker(args, config, "offline_cache", cache_root=cache_root)
+    print(f"Results JSON: {result_tracker['json_path']}")
+    print(f"Results CSV: {result_tracker['csv_path']}")
 
     # Classifier
     classifier = MLPClassifier(
@@ -322,7 +478,9 @@ def train_with_offline_cache(args, config):
     scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs)
     criterion = nn.CrossEntropyLoss()
 
-    best_acc = 0.0
+    best_acc = -1.0
+    best_epoch = 0
+    best_checkpoint_path = None
 
     print("\n" + "=" * 60)
     print("Starting training (offline cache mode)...")
@@ -399,6 +557,7 @@ def train_with_offline_cache(args, config):
         # Evaluate
         classifier.eval()
         extractor.eval()
+        test_loss = 0.0
         test_correct = 0
         test_total = 0
 
@@ -411,27 +570,56 @@ def train_with_offline_cache(args, config):
                     with autocast():
                         features = extractor.forward_from_cache(cached_inputs)
                         outputs = classifier(features)
+                        loss = criterion(outputs, labels)
                 else:
                     features = extractor.forward_from_cache(cached_inputs)
                     outputs = classifier(features)
+                    loss = criterion(outputs, labels)
 
+                test_loss += loss.item() * labels.size(0)
                 _, predicted = outputs.max(1)
                 test_total += labels.size(0)
                 test_correct += predicted.eq(labels).sum().item()
 
+        train_loss = train_loss / train_total
+        test_loss = test_loss / test_total
         train_acc = 100. * train_correct / train_total
         test_acc = 100. * test_correct / test_total
 
+        is_best = test_acc > best_acc
         if test_acc > best_acc:
             best_acc = test_acc
-            save_offline_checkpoint(args, classifier, extractor)
+            best_epoch = epoch + 1
+            best_checkpoint_path = save_training_checkpoint(args, classifier, extractor)
+
+        record_epoch_result(
+            result_tracker,
+            epoch=epoch + 1,
+            train_loss=train_loss,
+            train_acc=train_acc,
+            test_loss=test_loss,
+            test_acc=test_acc,
+            best_acc=best_acc,
+            is_best=is_best,
+            optimizer=optimizer,
+        )
 
         print(f"Epoch {epoch+1}: Train {train_acc:.2f}% | Test {test_acc:.2f}% | Best {best_acc:.2f}%")
 
+    cache_removed = False
     if args.cleanup_cache:
         cleanup_cache_dir(cache_root)
+        cache_removed = True
         print(f"\nRemoved offline cache: {cache_root}")
 
+    finalize_result_tracker(
+        result_tracker,
+        best_acc=best_acc,
+        best_epoch=best_epoch,
+        checkpoint_path=best_checkpoint_path,
+        cache_root=cache_root,
+        cache_removed=cache_removed,
+    )
     return best_acc
 
 
@@ -467,6 +655,9 @@ def train_online(args, config):
         extractor.eval()
     print(f"Feature dimension: {extractor.feature_dim}")
     print_gpu_usage()
+    result_tracker = init_result_tracker(args, config, "online")
+    print(f"Results JSON: {result_tracker['json_path']}")
+    print(f"Results CSV: {result_tracker['csv_path']}")
 
     # Classifier
     classifier = MLPClassifier(
@@ -486,7 +677,9 @@ def train_online(args, config):
     scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs)
     criterion = nn.CrossEntropyLoss()
 
-    best_acc = 0.0
+    best_acc = -1.0
+    best_epoch = 0
+    best_checkpoint_path = None
 
     print("\n" + "=" * 60)
     print("Starting training (online mode)...")
@@ -556,6 +749,7 @@ def train_online(args, config):
         # Evaluate
         classifier.eval()
         extractor.eval()
+        test_loss = 0.0
         test_correct = 0
         test_total = 0
 
@@ -568,25 +762,50 @@ def train_online(args, config):
                     with autocast():
                         features = extractor(images)
                         outputs = classifier(features)
+                        loss = criterion(outputs, labels)
                 else:
                     features = extractor(images)
                     outputs = classifier(features)
+                    loss = criterion(outputs, labels)
 
+                test_loss += loss.item() * labels.size(0)
                 _, predicted = outputs.max(1)
                 test_total += labels.size(0)
                 test_correct += predicted.eq(labels).sum().item()
 
         if fusion_trainable:
             extractor.train()
+        train_loss = train_loss / train_total
+        test_loss = test_loss / test_total
         train_acc = 100. * train_correct / train_total
         test_acc = 100. * test_correct / test_total
 
+        is_best = test_acc > best_acc
         if test_acc > best_acc:
             best_acc = test_acc
-            torch.save(classifier.state_dict(), get_checkpoint_name(args))
+            best_epoch = epoch + 1
+            best_checkpoint_path = save_training_checkpoint(args, classifier, extractor)
+
+        record_epoch_result(
+            result_tracker,
+            epoch=epoch + 1,
+            train_loss=train_loss,
+            train_acc=train_acc,
+            test_loss=test_loss,
+            test_acc=test_acc,
+            best_acc=best_acc,
+            is_best=is_best,
+            optimizer=optimizer,
+        )
 
         print(f"Epoch {epoch+1}: Train {train_acc:.2f}% | Test {test_acc:.2f}% | Best {best_acc:.2f}%")
 
+    finalize_result_tracker(
+        result_tracker,
+        best_acc=best_acc,
+        best_epoch=best_epoch,
+        checkpoint_path=best_checkpoint_path,
+    )
     return best_acc
 
 
@@ -637,6 +856,7 @@ def main():
     print(f"Model dir: {args.model_dir}")
     print(f"Data dir: {args.data_dir}")
     print(f"Cache dir: {args.cache_dir}")
+    print(f"Results dir: {args.results_dir}")
     print(f"Cache dtype: {args.cache_dtype}")
     print(f"Rebuild cache: {args.rebuild_cache}")
     print(f"Cleanup cache: {args.cleanup_cache}")
