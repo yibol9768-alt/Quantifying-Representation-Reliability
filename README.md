@@ -339,6 +339,50 @@ python main.py --dataset cifar100 --model fusion \
 > 3) 统一随机种子 `--seed`。  
 > 若需要关闭，使用 `--disable_fusion_harmonization`。
 
+### 当前实现改了什么
+
+最近一轮修改主要是把 `COMM` 和 `MMViT` 调整得更接近论文思路，同时保持你的下游任务不变，仍然是分类任务，仍然统一接同一个 `MLP`。
+
+#### COMM 当前实现
+
+- 默认把 `CLIP` 作为主分支 `anchor`；如果没选 `clip`，就退回到你传入的第一个模型。
+- `CLIP` 分支保留全部 hidden layers 做层聚合。
+- `DINO` 和额外分支默认只取深层 `last 6 layers`，更接近“语义增强分支”的角色。
+- 非主分支先经过残差 `MLP` 对齐；如果维度不同，再线性映射到主分支维度。
+- 对齐后的辅助分支不会再和主分支直接 `concat`，而是通过可学习门控加到主分支 token 上。
+- 最终输出以主分支增强后的 token 表示为核心，再做统一投影，最后送入共享 `MLP` 分类器。
+
+也就是说，当前 `COMM` 不再是“对称拼接融合”，而是“主分支 + 辅助分支增强”的实现，这一点比旧版更接近 COMM 的原始想法。
+
+#### MMViT 当前实现
+
+- 保留 4-stage、16-block 的整体结构，stage self-block 数量仍然是 `[0,0,9,1]`。
+- 保留 stage 内的 `self-attn -> cross-attn -> scaled self-attn` 信息流。
+- 多模型 token 被视作多个 `views`，而不是先 pooling 成单个向量。
+- 新增可学习 `view embedding`，显式区分不同模型视图。
+- 多尺度 token 长度优先保持平方网格，例如 `14x14 -> 7x7 -> 4x4`，比简单整数截断更接近论文里的层级尺度变化。
+- block 内的 MLP 已改成标准 transformer `FFN` 形式，避免旧版那种“双重残差”写法。
+- 最终仍然取第一视图的 `CLS` 表示，再送入共享 `MLP` 分类器。
+
+#### 和旧版实现的区别
+
+- 旧版 `COMM` 更像 token 级 `concat baseline`；新版 `COMM` 更像非对称增强融合。
+- 旧版 `MMViT` 的 MLP 实现不够标准；新版已经改成更接近论文 block 的结构。
+- 旧版多视图区分主要靠顺序；新版 `MMViT` 显式加入了 `view embedding`。
+- 旧版多尺度 token 数量是简单按长度缩减；新版优先保留二维 patch 网格。
+
+#### 仍然没有改变的地方
+
+- 下游任务仍然是图像分类，不是原论文的完整任务设置。
+- 三种方法 `concat / comm / mmvit` 仍然统一接同一个 `MLP` 分类头做公平比较。
+- 当前项目仍然主要依赖冻结的 `MAE / CLIP / DINO` backbone 提特征，再训练 fusion 模块和分类器。
+
+所以更准确的说法是：
+
+- `concat` 是基线
+- `COMM` 是 `COMM-inspired classification fusion`
+- `MMViT` 是 `MMViT-inspired classification fusion`
+
 ## 离线缓存
 
 默认训练流程会先把 frozen backbone 的输出写入 `--cache_dir`，然后只从缓存训练后续模块和 MLP。
