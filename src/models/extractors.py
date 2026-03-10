@@ -1,4 +1,4 @@
-"""Feature extractors and strict paper-style fusion modules in offline mode."""
+"""Feature extractors and paper-inspired fusion modules for classification."""
 
 import math
 import os
@@ -299,8 +299,8 @@ class MultiModelConcatExtractor(nn.Module):
         self.extractors = None
 
 
-class TokenMLP(nn.Module):
-    """Token-wise MLP with residual path."""
+class ResidualTokenMLP(nn.Module):
+    """Residual token-wise MLP used for branch alignment blocks."""
 
     def __init__(self, dim: int, expand_ratio: float = 4.0):
         super().__init__()
@@ -314,8 +314,22 @@ class TokenMLP(nn.Module):
         return x + self.fc2(self.act(self.fc1(self.norm(x))))
 
 
+class TokenFeedForward(nn.Module):
+    """Standard transformer FFN without an internal residual shortcut."""
+
+    def __init__(self, dim: int, expand_ratio: float = 4.0):
+        super().__init__()
+        hidden_dim = int(dim * expand_ratio)
+        self.fc1 = nn.Linear(dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, dim)
+        self.act = nn.GELU()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.fc2(self.act(self.fc1(x)))
+
+
 class COMMStrictFusionExtractor(nn.Module):
-    """Strict COMM-style fusion with LLN-LayerScale + DINO MLP alignment."""
+    """COMM-inspired classifier fusion with CLIP-anchor token enhancement."""
 
     def __init__(
         self,
@@ -334,13 +348,15 @@ class COMMStrictFusionExtractor(nn.Module):
             name: FeatureExtractor(name, normalize_input=True, model_dir=model_dir)
             for name in self.model_types
         })
+        self.anchor_model = "clip" if "clip" in self.model_types else self.model_types[0]
+        self.anchor_dim = self.extractors[self.anchor_model].token_dim
 
         self.layer_indices: Dict[str, List[int]] = {}
         self.lln_modules = nn.ModuleDict()
         self.layer_scale_logits = nn.ParameterDict()
         self.aligners = nn.ModuleDict()
+        self.branch_gate_logits = nn.ParameterDict()
 
-        branch_dims = []
         for name in self.model_types:
             depth = self.extractors[name].num_hidden_layers
             indices = self._select_layer_indices(name, depth)
@@ -353,21 +369,24 @@ class COMMStrictFusionExtractor(nn.Module):
             ])
             self.lln_modules[name] = lln_list
             self.layer_scale_logits[name] = nn.Parameter(torch.zeros(len(indices)))
+            gate_init = 0.0 if name == self.anchor_model else -2.0
+            self.branch_gate_logits[name] = nn.Parameter(torch.full((1,), gate_init))
 
-            if name == "dino":
-                self.aligners[name] = self._build_mlp_aligner(dim, dino_mlp_blocks, dino_mlp_ratio)
-            elif name == "clip":
+            if name == self.anchor_model and dim == self.anchor_dim:
                 self.aligners[name] = nn.Identity()
             else:
-                # For optional 3rd model branch, keep aligned with DINO-style MLP.
-                self.aligners[name] = self._build_mlp_aligner(dim, dino_mlp_blocks, dino_mlp_ratio)
+                align_layers: List[nn.Module] = []
+                if dino_mlp_blocks > 0:
+                    align_layers.extend(ResidualTokenMLP(dim, dino_mlp_ratio) for _ in range(dino_mlp_blocks))
+                if dim != self.anchor_dim:
+                    align_layers.append(nn.Linear(dim, self.anchor_dim))
+                if not align_layers:
+                    align_layers.append(nn.Identity())
+                self.aligners[name] = nn.Sequential(*align_layers)
 
-            branch_dims.append(dim)
-
-        self.concat_dim = sum(branch_dims)
-        self.final_norm = nn.LayerNorm(self.concat_dim)
-        target_dim = self.concat_dim if output_dim is None else output_dim
-        self.final_proj = nn.Linear(self.concat_dim, target_dim)
+        self.final_norm = nn.LayerNorm(self.anchor_dim)
+        target_dim = self.anchor_dim if output_dim is None else output_dim
+        self.final_proj = nn.Linear(self.anchor_dim, target_dim)
         self.feature_dim = target_dim
         self.trainable = True
 
@@ -375,7 +394,7 @@ class COMMStrictFusionExtractor(nn.Module):
     def _build_mlp_aligner(dim: int, num_blocks: int, ratio: float) -> nn.Module:
         if num_blocks <= 0:
             return nn.Identity()
-        return nn.Sequential(*[TokenMLP(dim, ratio) for _ in range(num_blocks)])
+        return nn.Sequential(*[ResidualTokenMLP(dim, ratio) for _ in range(num_blocks)])
 
     @staticmethod
     def _select_layer_indices(model_name: str, depth: int) -> List[int]:
@@ -384,11 +403,10 @@ class COMMStrictFusionExtractor(nn.Module):
         if model_name == "clip":
             # Paper uses all CLIP layers.
             return list(range(depth))
-        if model_name == "dino":
-            # Paper uses deep DINO layers (19~24 for ViT-L), adapted as "last 6 layers".
-            keep = min(6, depth)
-            return list(range(depth - keep, depth))
-        return list(range(depth))
+        # For DINO and optional extra backbones, keep only deeper layers to
+        # preserve the "semantic enhancement" role instead of flattening all layers.
+        keep = min(6, depth)
+        return list(range(depth - keep, depth))
 
     def _merge_model_layers(self, model_name: str, token_layers: List[torch.Tensor]) -> torch.Tensor:
         indices = self.layer_indices[model_name]
@@ -429,19 +447,24 @@ class COMMStrictFusionExtractor(nn.Module):
         return self.aligners[model_name](merged)
 
     def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
-        branch_tokens: List[torch.Tensor] = []
+        branch_tokens: Dict[str, torch.Tensor] = {}
         target_tokens: Optional[int] = None
 
         for name in self.model_types:
             token_layers = self.extractors[name].extract_hidden_tokens(pixel_values)
             merged = self._merge_model_layers(name, token_layers)
-            branch_tokens.append(merged)
+            branch_tokens[name] = merged
             target_tokens = merged.size(1) if target_tokens is None else min(target_tokens, merged.size(1))
 
         assert target_tokens is not None
-        aligned = [_resize_tokens(tokens, target_tokens) for tokens in branch_tokens]
+        fused = _resize_tokens(branch_tokens[self.anchor_model], target_tokens)
+        for name in self.model_types:
+            if name == self.anchor_model:
+                continue
+            aligned = _resize_tokens(branch_tokens[name], target_tokens)
+            gate = torch.sigmoid(self.branch_gate_logits[name]).view(1, 1, 1)
+            fused = fused + gate * aligned
 
-        fused = torch.cat(aligned, dim=-1)
         fused = self.final_proj(self.final_norm(fused))
         return fused.mean(dim=1)
 
@@ -460,17 +483,22 @@ class COMMStrictFusionExtractor(nn.Module):
 
     def forward_from_cache(self, cached_inputs: Dict[str, torch.Tensor]) -> torch.Tensor:
         """Fuse cached hidden token stacks without rerunning backbones."""
-        branch_tokens: List[torch.Tensor] = []
+        branch_tokens: Dict[str, torch.Tensor] = {}
         target_tokens: Optional[int] = None
 
         for name in self.model_types:
             merged = self._merge_cached_layers(name, cached_inputs[f"layers_{name}"])
-            branch_tokens.append(merged)
+            branch_tokens[name] = merged
             target_tokens = merged.size(1) if target_tokens is None else min(target_tokens, merged.size(1))
 
         assert target_tokens is not None
-        aligned = [_resize_tokens(tokens, target_tokens) for tokens in branch_tokens]
-        fused = torch.cat(aligned, dim=-1)
+        fused = _resize_tokens(branch_tokens[self.anchor_model], target_tokens)
+        for name in self.model_types:
+            if name == self.anchor_model:
+                continue
+            aligned = _resize_tokens(branch_tokens[name], target_tokens)
+            gate = torch.sigmoid(self.branch_gate_logits[name]).view(1, 1, 1)
+            fused = fused + gate * aligned
         fused = self.final_proj(self.final_norm(fused))
         return fused.mean(dim=1)
 
@@ -579,7 +607,7 @@ class MMViTSelfBlock(nn.Module):
         )
         self.skip = TokenDownsample(in_dim=dim, out_dim=out_dim, stride=stride)
         self.norm2 = nn.LayerNorm(out_dim)
-        self.mlp = TokenMLP(out_dim, mlp_ratio)
+        self.mlp = TokenFeedForward(out_dim, mlp_ratio)
 
     def forward(self, x: torch.Tensor, has_cls: bool = False) -> torch.Tensor:
         attn_out = self.attn(self.norm1(x), has_cls=has_cls)
@@ -618,7 +646,7 @@ class MMViTCrossBlock(nn.Module):
 
         self.out_proj = nn.Linear(dim, dim)
         self.post_norm = nn.ModuleList([nn.LayerNorm(dim) for _ in range(num_views)])
-        self.mlps = nn.ModuleList([TokenMLP(dim, mlp_ratio) for _ in range(num_views)])
+        self.mlps = nn.ModuleList([TokenFeedForward(dim, mlp_ratio) for _ in range(num_views)])
 
     def _reshape_heads(self, x: torch.Tensor) -> torch.Tensor:
         bsz, seq_len, dim = x.shape
@@ -709,7 +737,7 @@ class MMViTStage(nn.Module):
 
 
 class MMViTStrictFusionExtractor(nn.Module):
-    """Strict MMViT-style multiscale multiview token fusion."""
+    """MMViT-inspired multiscale multiview token fusion for classification."""
 
     def __init__(
         self,
@@ -736,6 +764,7 @@ class MMViTStrictFusionExtractor(nn.Module):
             name: nn.Linear(self.extractors[name].token_dim, base_dim)
             for name in self.model_types
         })
+        self.view_embed = nn.Parameter(torch.zeros(1, self.num_views, base_dim))
 
         self.cls_token = nn.Parameter(torch.zeros(1, 1, base_dim))
         self.pos_embed = nn.ParameterList([
@@ -797,6 +826,10 @@ class MMViTStrictFusionExtractor(nn.Module):
         self.final_proj = nn.Linear(stage_dims[-1], target_dim)
         self.feature_dim = target_dim
         self.trainable = True
+        nn.init.trunc_normal_(self.cls_token, std=0.02)
+        nn.init.trunc_normal_(self.view_embed, std=0.02)
+        for pos_embed in self.pos_embed:
+            nn.init.trunc_normal_(pos_embed, std=0.02)
 
     def _build_view_tokens(self, pixel_values: torch.Tensor) -> Tuple[List[torch.Tensor], List[bool]]:
         patch_tokens = []
@@ -805,13 +838,19 @@ class MMViTStrictFusionExtractor(nn.Module):
             patch_tokens.append(tokens)
 
         high_res_tokens = patch_tokens[0].size(1)
+        high_res_side = _infer_square_size(high_res_tokens)
         views: List[torch.Tensor] = []
         has_cls_flags: List[bool] = []
 
         for idx, name in enumerate(self.model_types):
-            target_tokens = max(4, high_res_tokens // (4 ** idx))
+            if high_res_side is not None:
+                target_side = max(2, round(high_res_side / (2 ** idx)))
+                target_tokens = target_side * target_side
+            else:
+                target_tokens = max(4, high_res_tokens // (4 ** idx))
             tokens = _resize_tokens(patch_tokens[idx], target_tokens)
             tokens = self.input_proj[name](tokens)
+            tokens = tokens + self.view_embed[:, idx:idx + 1]
 
             if idx == 0:
                 cls_token = self.cls_token.expand(tokens.size(0), -1, -1)
@@ -831,13 +870,19 @@ class MMViTStrictFusionExtractor(nn.Module):
     ) -> Tuple[List[torch.Tensor], List[bool]]:
         patch_tokens = [cached_inputs[f"patches_{name}"] for name in self.model_types]
         high_res_tokens = patch_tokens[0].size(1)
+        high_res_side = _infer_square_size(high_res_tokens)
         views: List[torch.Tensor] = []
         has_cls_flags: List[bool] = []
 
         for idx, name in enumerate(self.model_types):
-            target_tokens = max(4, high_res_tokens // (4 ** idx))
+            if high_res_side is not None:
+                target_side = max(2, round(high_res_side / (2 ** idx)))
+                target_tokens = target_side * target_side
+            else:
+                target_tokens = max(4, high_res_tokens // (4 ** idx))
             tokens = _resize_tokens(patch_tokens[idx], target_tokens)
             tokens = self.input_proj[name](tokens)
+            tokens = tokens + self.view_embed[:, idx:idx + 1]
 
             if idx == 0:
                 cls_token = self.cls_token.expand(tokens.size(0), -1, -1)
@@ -894,7 +939,7 @@ def get_extractor(
         model_type: Single model type (`mae`, `clip`, `dino`) or `fusion`.
         fusion_method: One of `concat`, `comm`, `mmvit` when model_type is `fusion`.
         fusion_models: List of model types for fusion, e.g. ["clip", "dino"].
-        fusion_kwargs: Extra kwargs for strict fusion implementations.
+        fusion_kwargs: Extra kwargs for paper-inspired classifier fusion implementations.
     """
     if model_type != "fusion":
         return FeatureExtractor(model_type, normalize_input=False, model_dir=model_dir)

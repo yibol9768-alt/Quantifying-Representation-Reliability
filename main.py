@@ -40,7 +40,7 @@ def parse_args():
                         choices=["mae", "clip", "dino", "fusion"])
     parser.add_argument("--fusion_method", type=str, default="concat",
                         choices=["concat", "comm", "mmvit"],
-                        help="Fusion method when --model fusion")
+                        help="Fusion method when --model fusion (paper-inspired classifier adaptation)")
     parser.add_argument("--fusion_models", type=str, default="mae,clip,dino",
                         help="Comma-separated model list for fusion, e.g. clip,dino or mae,clip,dino")
     parser.add_argument("--fusion_output_dim", type=int, default=1024,
@@ -48,17 +48,17 @@ def parse_args():
     parser.add_argument("--disable_fusion_harmonization", action="store_true",
                         help="Disable fair-comparison harmonization for fusion methods")
     parser.add_argument("--comm_dino_mlp_blocks", type=int, default=2,
-                        help="COMM: number of residual MLP blocks for DINO/text-space alignment")
+                        help="COMM-inspired: residual MLP blocks for non-anchor branch alignment")
     parser.add_argument("--comm_dino_mlp_ratio", type=float, default=8.0,
-                        help="COMM: expansion ratio of each DINO MLP block")
+                        help="COMM-inspired: expansion ratio of each branch-alignment MLP block")
     parser.add_argument("--mmvit_base_dim", type=int, default=96,
-                        help="MMViT: base embedding dim of stage-1")
+                        help="MMViT-inspired: base embedding dim of stage-1")
     parser.add_argument("--mmvit_mlp_ratio", type=float, default=4.0,
-                        help="MMViT: MLP expansion ratio in attention blocks")
+                        help="MMViT-inspired: MLP expansion ratio in attention blocks")
     parser.add_argument("--mmvit_num_heads", type=int, default=8,
-                        help="MMViT: preferred number of attention heads per stage")
+                        help="MMViT-inspired: preferred number of attention heads per stage")
     parser.add_argument("--mmvit_max_position_tokens", type=int, default=256,
-                        help="MMViT: reference length of learnable positional embeddings")
+                        help="MMViT-inspired: reference length of learnable positional embeddings")
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--batch_size", type=int, default=128)

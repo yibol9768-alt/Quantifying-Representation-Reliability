@@ -324,11 +324,14 @@ python main.py --dataset cifar100 --model fusion \
 
 ## Fusion 方法
 
+下表里的 `COMM` 和 `MMViT` 都是用于分类任务的论文思路迁移版本，不是原论文任务的完整复现。
+当前项目保持下游任务固定为图像分类，并统一在 fusion 输出后接同一个 `MLP` 做公平比较。
+
 | 方法 | 参数 | 粒度 | 说明 |
 |------|------|------|------|
 | Concat | `--fusion_method concat` | 全局特征 | L2 归一化后拼接 |
-| COMM | `--fusion_method comm` | Token 级 | 严格复现 `LLN+LayerScale`（CLIP 全层、DINO 深层）+ DINO MLP 对齐 + 最终线性投影 |
-| MMViT | `--fusion_method mmvit` | Token 级 | 严格复现 4-stage 16-block 结构（`[0,0,9,1]`）、cross-attn 与 scaled self-attn |
+| COMM | `--fusion_method comm` | Token 级 | `COMM-inspired` 分类适配：CLIP 主分支，全层/深层层聚合，非主分支通过残差 MLP 对齐后再做 token 增强 |
+| MMViT | `--fusion_method mmvit` | Token 级 | `MMViT-inspired` 分类适配：保留 4-stage 16-block 结构（`[0,0,9,1]`）、cross-attn 与 scaled self-attn，并将多模型 token 视作多视图输入 |
 
 > 默认开启融合横向对比模式（harmonization）：  
 > 1) 三种方法统一输出维度 `--fusion_output_dim`；  
