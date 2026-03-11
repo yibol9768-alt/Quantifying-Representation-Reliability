@@ -37,10 +37,32 @@ def parse_args():
     parser.add_argument("--dataset", type=str, default="cifar100",
                         choices=list(DATASET_CONFIGS.keys()))
     parser.add_argument("--model", type=str, default="mae",
-                        choices=["mae", "clip", "dino", "fusion"])
+                        choices=[
+                            "mae", "clip", "dino", "fusion",
+                            # Vision Transformer series
+                            "vit", "deit", "swin", "beit", "eva",
+                            # Large variants
+                            "mae_large", "clip_large", "dino_large",
+                            # CLIP series
+                            "openclip",
+                            # Modern CNN
+                            "convnext",
+                            # Multimodal
+                            "sam", "albef",
+                        ])
     parser.add_argument("--fusion_method", type=str, default="concat",
-                        choices=["concat", "comm", "mmvit"],
-                        help="Fusion method when --model fusion (paper-inspired classifier adaptation)")
+                        choices=[
+                            "concat",           # Baseline: raw concatenation
+                            "proj_concat",      # Baseline A: projected concatenation
+                            "weighted_sum",     # Baseline B: learnable weighted sum
+                            "gated",            # Baseline C: gated fusion
+                            "difference_concat",# Baseline D: difference-aware concat
+                            "hadamard_concat",  # Baseline E: hadamard interaction concat
+                            "late_fusion",      # Baseline F: late fusion (logit-level ensemble)
+                            "comm",             # Paper-inspired: COMM
+                            "mmvit",            # Paper-inspired: MMViT
+                        ],
+                        help="Fusion method when --model fusion")
     parser.add_argument("--fusion_models", type=str, default="mae,clip,dino",
                         help="Comma-separated model list for fusion, e.g. clip,dino or mae,clip,dino")
     parser.add_argument("--fusion_output_dim", type=int, default=1024,
@@ -92,7 +114,19 @@ def parse_args():
 
 def parse_fusion_models(fusion_models: str):
     """Parse fusion model list from CLI."""
-    valid_models = {"mae", "clip", "dino"}
+    valid_models = {
+        "mae", "clip", "dino",
+        # Vision Transformer series
+        "vit", "deit", "swin", "beit", "eva",
+        # Large variants
+        "mae_large", "clip_large", "dino_large",
+        # CLIP series
+        "openclip",
+        # Modern CNN
+        "convnext",
+        # Multimodal
+        "sam", "albef",
+    }
     models = [name.strip().lower() for name in fusion_models.split(",") if name.strip()]
 
     # Preserve order while removing duplicates.
@@ -128,7 +162,7 @@ def get_checkpoint_name(args) -> str:
     return f"{args.dataset}_{args.model}_best.pth"
 
 
-def get_fusion_kwargs(args) -> dict:
+def get_fusion_kwargs(args, num_classes: int = 100) -> dict:
     """Build fusion kwargs from CLI arguments."""
     return {
         "comm_dino_mlp_blocks": args.comm_dino_mlp_blocks,
@@ -138,6 +172,7 @@ def get_fusion_kwargs(args) -> dict:
         "mmvit_num_heads": args.mmvit_num_heads,
         "mmvit_max_position_tokens": args.mmvit_max_position_tokens,
         "fusion_output_dim": args.fusion_output_dim if use_fusion_harmonization(args) else None,
+        "num_classes": num_classes,  # For late_fusion
     }
 
 
@@ -145,10 +180,15 @@ def is_trainable_fusion(args) -> bool:
     """Whether current setup uses trainable fusion modules."""
     if args.model != "fusion":
         return False
+    # All new baseline methods are trainable
+    trainable_methods = {
+        "proj_concat", "weighted_sum", "gated",
+        "difference_concat", "hadamard_concat", "comm", "mmvit"
+    }
     # In harmonized mode, concat has a trainable projection for fair comparison.
     if use_fusion_harmonization(args):
         return True
-    return args.fusion_method in {"comm", "mmvit"}
+    return args.fusion_method in trainable_methods
 
 
 def use_fusion_harmonization(args) -> bool:
@@ -449,7 +489,7 @@ def train_with_offline_cache(args, config):
         args.model,
         fusion_method=args.fusion_method,
         fusion_models=args.fusion_model_list,
-        fusion_kwargs=get_fusion_kwargs(args),
+        fusion_kwargs=get_fusion_kwargs(args, config.num_classes),
         model_dir=args.model_dir,
     ).to(device)
     print(f"Feature dimension: {extractor.feature_dim}")
@@ -645,7 +685,7 @@ def train_online(args, config):
         args.model,
         fusion_method=args.fusion_method,
         fusion_models=args.fusion_model_list,
-        fusion_kwargs=get_fusion_kwargs(args),
+        fusion_kwargs=get_fusion_kwargs(args, config.num_classes),
         model_dir=args.model_dir,
     ).to(device)
     fusion_trainable = is_trainable_fusion(args)

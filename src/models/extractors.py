@@ -10,7 +10,19 @@ os.environ["HF_HUB_OFFLINE"] = "1"  # Force offline mode
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import AutoImageProcessor, CLIPVisionModel, Dinov2Model, ViTMAEModel
+from transformers import (
+    AutoImageProcessor,
+    CLIPVisionModel,
+    Dinov2Model,
+    ViTMAEModel,
+    ViTModel,
+    SwinModel,
+    BeitModel,
+    DeiTModel,
+    ConvNextV2Model,
+    SamModel,
+    BlipModel,
+)
 
 
 def _infer_square_size(num_tokens: int) -> Optional[int]:
@@ -99,19 +111,84 @@ class FeatureExtractor(nn.Module):
     """
 
     MODEL_PATHS = {
+        # Vision Transformer series
+        "vit": {
+            "path": "vit-base-patch16",
+            "hf_name": "google/vit-base-patch16-224",
+            "dim": 768,
+        },
+        "deit": {
+            "path": "deit-base",
+            "hf_name": "facebook/deit-base-patch16-224",
+            "dim": 768,
+        },
+        "swin": {
+            "path": "swin-base",
+            "hf_name": "microsoft/swin-base-patch4-window7-224",
+            "dim": 1024,
+        },
+        "beit": {
+            "path": "beit-base",
+            "hf_name": "microsoft/beit-base-patch16-224-pt22k",
+            "dim": 768,
+        },
+        "eva": {
+            "path": "eva-base",
+            "hf_name": "nioevax/eva-base-patch16-224",
+            "dim": 768,
+        },
+        # Self-supervised series
         "mae": {
             "path": "vit-mae-base",
             "hf_name": "facebook/vit-mae-base",
             "dim": 768,
         },
+        "mae_large": {
+            "path": "vit-mae-large",
+            "hf_name": "facebook/vit-mae-large",
+            "dim": 1024,
+        },
+        "dino": {
+            "path": "dinov2-base",
+            "hf_name": "facebook/dinov2-base",
+            "dim": 768,
+        },
+        "dino_large": {
+            "path": "dinov2-large",
+            "hf_name": "facebook/dinov2-large",
+            "dim": 1024,
+        },
+        # CLIP series
         "clip": {
             "path": "clip-vit-base-patch16",
             "hf_name": "openai/clip-vit-base-patch16",
             "dim": 768,
         },
-        "dino": {
-            "path": "dinov2-base",
-            "hf_name": "facebook/dinov2-base",
+        "clip_large": {
+            "path": "clip-vit-large",
+            "hf_name": "openai/clip-vit-large-patch14",
+            "dim": 768,
+        },
+        "openclip": {
+            "path": "openclip-vit-b32",
+            "hf_name": "laion/CLIP-ViT-B-32",
+            "dim": 512,
+        },
+        # Modern CNN
+        "convnext": {
+            "path": "convnext-base",
+            "hf_name": "facebook/convnext-base",
+            "dim": 1024,
+        },
+        # Multimodal models (vision encoder only)
+        "sam": {
+            "path": "sam-vit-base",
+            "hf_name": "facebook/sam-vit-base",
+            "dim": 768,
+        },
+        "albef": {
+            "path": "albef-base",
+            "hf_name": "Salesforce/albef-base",
             "dim": 768,
         },
     }
@@ -139,12 +216,43 @@ class FeatureExtractor(nn.Module):
                 f"See README for details."
             )
 
+        # Load model based on type
         if model_type == "mae":
+            self.model = ViTMAEModel.from_pretrained(str(model_path), local_files_only=True)
+        elif model_type == "mae_large":
             self.model = ViTMAEModel.from_pretrained(str(model_path), local_files_only=True)
         elif model_type == "clip":
             self.model = CLIPVisionModel.from_pretrained(str(model_path), local_files_only=True)
-        else:
+        elif model_type == "clip_large":
+            self.model = CLIPVisionModel.from_pretrained(str(model_path), local_files_only=True)
+        elif model_type == "openclip":
+            self.model = CLIPVisionModel.from_pretrained(str(model_path), local_files_only=True)
+        elif model_type == "dino":
             self.model = Dinov2Model.from_pretrained(str(model_path), local_files_only=True)
+        elif model_type == "dino_large":
+            self.model = Dinov2Model.from_pretrained(str(model_path), local_files_only=True)
+        elif model_type == "vit":
+            self.model = ViTModel.from_pretrained(str(model_path), local_files_only=True)
+        elif model_type == "swin":
+            self.model = SwinModel.from_pretrained(str(model_path), local_files_only=True)
+        elif model_type == "beit":
+            self.model = BeitModel.from_pretrained(str(model_path), local_files_only=True)
+        elif model_type == "deit":
+            self.model = DeiTModel.from_pretrained(str(model_path), local_files_only=True)
+        elif model_type == "convnext":
+            self.model = ConvNextV2Model.from_pretrained(str(model_path), local_files_only=True)
+        elif model_type == "eva":
+            self.model = ViTModel.from_pretrained(str(model_path), local_files_only=True)
+        elif model_type == "sam":
+            # SAM: use only the vision encoder for feature extraction
+            sam_model = SamModel.from_pretrained(str(model_path), local_files_only=True)
+            self.model = sam_model.vision_encoder
+        elif model_type == "albef":
+            # ALBEF: use only the vision encoder
+            albef_model = BlipModel.from_pretrained(str(model_path), local_files_only=True)
+            self.model = albef_model.vision_model
+        else:
+            raise ValueError(f"Unsupported model type: {model_type}")
 
         self.processor = AutoImageProcessor.from_pretrained(str(model_path), local_files_only=True)
 
@@ -293,6 +401,521 @@ class MultiModelConcatExtractor(nn.Module):
             features.append(feat)
         fused = torch.cat(features, dim=-1)
         return self.output_proj(fused)
+
+    def release_backbones(self):
+        """Drop frozen backbones once their outputs are cached."""
+        self.extractors = None
+
+
+class MultiModelProjectedConcatExtractor(nn.Module):
+    """Baseline A: Project features to same dimension, then concatenate.
+
+    Formula: z = [P_c(f_c); P_d(f_d); P_m(f_m)]
+
+    More reasonable than raw concat because:
+    - Different encoders have different output dimensions
+    - Different feature distributions
+    - Projection makes them more comparable
+    """
+
+    def __init__(
+        self,
+        model_types: Sequence[str],
+        proj_dim: int = 256,
+        model_dir: str = "./models",
+    ):
+        super().__init__()
+        self.model_types = list(model_types)
+        if len(self.model_types) < 2:
+            raise ValueError("Fusion requires at least two models.")
+
+        self.extractors = nn.ModuleDict({
+            name: FeatureExtractor(name, normalize_input=True, model_dir=model_dir)
+            for name in self.model_types
+        })
+
+        # Individual projections for each model
+        self.projections = nn.ModuleDict({
+            name: nn.Sequential(
+                nn.LayerNorm(self.extractors[name].feature_dim),
+                nn.Linear(self.extractors[name].feature_dim, proj_dim)
+            )
+            for name in self.model_types
+        })
+
+        self.feature_dim = proj_dim * len(self.model_types)
+        self.proj_dim = proj_dim
+        self.trainable = True
+
+    def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
+        projected_features = []
+        for name in self.model_types:
+            feat = self.extractors[name](pixel_values)
+            projected_feat = self.projections[name](feat)
+            projected_features.append(projected_feat)
+        return torch.cat(projected_features, dim=-1)
+
+    @torch.no_grad()
+    def extract_cache_batch(self, pixel_values: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """Cache projected features for offline fusion training."""
+        cached = {}
+        for name in self.model_types:
+            feat = self.extractors[name](pixel_values)
+            cached[f"feat_{name}"] = feat
+        return cached
+
+    def forward_from_cache(self, cached_inputs: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """Fuse cached features with projection."""
+        projected_features = []
+        for name in self.model_types:
+            feat = cached_inputs[f"feat_{name}"]
+            projected_feat = self.projections[name](feat)
+            projected_features.append(projected_feat)
+        return torch.cat(projected_features, dim=-1)
+
+    def release_backbones(self):
+        """Drop frozen backbones once their outputs are cached."""
+        self.extractors = None
+
+
+class MultiModelWeightedSumExtractor(nn.Module):
+    """Baseline B: Learnable weighted sum of projected features.
+
+    Formula: z = α_c·z_c + α_d·z_d + α_m·z_m
+    where α = softmax(w) and w is learnable.
+
+    Very simple but effective baseline.
+    """
+
+    def __init__(
+        self,
+        model_types: Sequence[str],
+        proj_dim: int = 512,
+        model_dir: str = "./models",
+    ):
+        super().__init__()
+        self.model_types = list(model_types)
+        if len(self.model_types) < 2:
+            raise ValueError("Fusion requires at least two models.")
+
+        self.extractors = nn.ModuleDict({
+            name: FeatureExtractor(name, normalize_input=True, model_dir=model_dir)
+            for name in self.model_types
+        })
+
+        # Individual projections for each model
+        self.projections = nn.ModuleDict({
+            name: nn.Sequential(
+                nn.LayerNorm(self.extractors[name].feature_dim),
+                nn.Linear(self.extractors[name].feature_dim, proj_dim)
+            )
+            for name in self.model_types
+        })
+
+        # Learnable weights (scalar for each model)
+        self.weight_params = nn.Parameter(torch.zeros(len(self.model_types)))
+
+        self.feature_dim = proj_dim
+        self.proj_dim = proj_dim
+        self.trainable = True
+
+    def _get_weights(self) -> torch.Tensor:
+        """Get normalized weights via softmax."""
+        return torch.softmax(self.weight_params, dim=0)
+
+    def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
+        weights = self._get_weights()
+        fused = torch.zeros(pixel_values.size(0), self.proj_dim, device=pixel_values.device)
+
+        for i, name in enumerate(self.model_types):
+            feat = self.extractors[name](pixel_values)
+            projected_feat = self.projections[name](feat)
+            fused = fused + weights[i] * projected_feat
+
+        return fused
+
+    @torch.no_grad()
+    def extract_cache_batch(self, pixel_values: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """Cache features for offline fusion training."""
+        return {
+            f"feat_{name}": self.extractors[name](pixel_values)
+            for name in self.model_types
+        }
+
+    def forward_from_cache(self, cached_inputs: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """Fuse cached features with learnable weights."""
+        weights = self._get_weights()
+        device = next(iter(cached_inputs.values())).device
+        fused = torch.zeros(cached_inputs[f"feat_{self.model_types[0]}"].size(0),
+                           self.proj_dim, device=device)
+
+        for i, name in enumerate(self.model_types):
+            feat = cached_inputs[f"feat_{name}"]
+            projected_feat = self.projections[name](feat)
+            fused = fused + weights[i] * projected_feat
+
+        return fused
+
+    def release_backbones(self):
+        """Drop frozen backbones once their outputs are cached."""
+        self.extractors = None
+
+
+class MultiModelGatedFusionExtractor(nn.Module):
+    """Baseline C: Gated fusion with sample-wise adaptive weights.
+
+    Formula:
+        g = softmax(MLP([z_c; z_d; z_m]))
+        z = g_c·z_c + g_d·z_d + g_m·z_m
+
+    More flexible than fixed weighted sum.
+    The model learns to trust different encoders for different images.
+    """
+
+    def __init__(
+        self,
+        model_types: Sequence[str],
+        proj_dim: int = 512,
+        hidden_dim: int = 128,
+        model_dir: str = "./models",
+    ):
+        super().__init__()
+        self.model_types = list(model_types)
+        if len(self.model_types) < 2:
+            raise ValueError("Fusion requires at least two models.")
+
+        self.extractors = nn.ModuleDict({
+            name: FeatureExtractor(name, normalize_input=True, model_dir=model_dir)
+            for name in self.model_types
+        })
+
+        # Individual projections for each model
+        self.projections = nn.ModuleDict({
+            name: nn.Sequential(
+                nn.LayerNorm(self.extractors[name].feature_dim),
+                nn.Linear(self.extractors[name].feature_dim, proj_dim)
+            )
+            for name in self.model_types
+        })
+
+        # Gate network: takes concatenated features, outputs weights
+        total_dim = proj_dim * len(self.model_types)
+        self.gate_network = nn.Sequential(
+            nn.Linear(total_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, len(self.model_types))
+        )
+
+        self.feature_dim = proj_dim
+        self.proj_dim = proj_dim
+        self.trainable = True
+
+    def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
+        # Get all projected features
+        projected_features = []
+        for name in self.model_types:
+            feat = self.extractors[name](pixel_values)
+            projected_feat = self.projections[name](feat)
+            projected_features.append(projected_feat)
+
+        # Compute gate weights
+        concat_features = torch.cat(projected_features, dim=-1)
+        gate_logits = self.gate_network(concat_features)
+        gate_weights = torch.softmax(gate_logits, dim=-1)  # [B, num_models]
+
+        # Apply gated fusion
+        fused = torch.zeros_like(projected_features[0])
+        for i, proj_feat in enumerate(projected_features):
+            fused = fused + gate_weights[:, i:i+1] * proj_feat
+
+        return fused
+
+    @torch.no_grad()
+    def extract_cache_batch(self, pixel_values: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """Cache features for offline fusion training."""
+        return {
+            f"feat_{name}": self.extractors[name](pixel_values)
+            for name in self.model_types
+        }
+
+    def forward_from_cache(self, cached_inputs: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """Fuse cached features with gated fusion."""
+        # Get all projected features
+        projected_features = []
+        for name in self.model_types:
+            feat = cached_inputs[f"feat_{name}"]
+            projected_feat = self.projections[name](feat)
+            projected_features.append(projected_feat)
+
+        # Compute gate weights
+        concat_features = torch.cat(projected_features, dim=-1)
+        gate_logits = self.gate_network(concat_features)
+        gate_weights = torch.softmax(gate_logits, dim=-1)
+
+        # Apply gated fusion
+        fused = torch.zeros_like(projected_features[0])
+        for i, proj_feat in enumerate(projected_features):
+            fused = fused + gate_weights[:, i:i+1] * proj_feat
+
+        return fused
+
+    def release_backbones(self):
+        """Drop frozen backbones once their outputs are cached."""
+        self.extractors = None
+
+
+class MultiModelDifferenceAwareExtractor(nn.Module):
+    """Baseline D: Concat with pairwise differences.
+
+    Formula: z = [z_c; z_d; z_m; z_c-z_d; z_c-z_m; z_d-z_m]
+
+    Explicitly models "difference information" between representations.
+    Very suitable for representation reliability/complementarity analysis.
+    """
+
+    def __init__(
+        self,
+        model_types: Sequence[str],
+        proj_dim: int = 256,
+        model_dir: str = "./models",
+    ):
+        super().__init__()
+        self.model_types = list(model_types)
+        if len(self.model_types) < 2:
+            raise ValueError("Fusion requires at least two models.")
+
+        self.extractors = nn.ModuleDict({
+            name: FeatureExtractor(name, normalize_input=True, model_dir=model_dir)
+            for name in self.model_types
+        })
+
+        # Individual projections for each model
+        self.projections = nn.ModuleDict({
+            name: nn.Sequential(
+                nn.LayerNorm(self.extractors[name].feature_dim),
+                nn.Linear(self.extractors[name].feature_dim, proj_dim)
+            )
+            for name in self.model_types
+        })
+
+        num_models = len(self.model_types)
+        # Original features + pairwise differences
+        num_diffs = num_models * (num_models - 1) // 2
+        self.feature_dim = proj_dim * (num_models + num_diffs)
+        self.proj_dim = proj_dim
+        self.trainable = True
+
+    def _compute_differences(self, features: List[torch.Tensor]) -> List[torch.Tensor]:
+        """Compute pairwise differences between features."""
+        differences = []
+        for i in range(len(features)):
+            for j in range(i + 1, len(features)):
+                differences.append(features[i] - features[j])
+        return differences
+
+    def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
+        # Get projected features
+        projected_features = []
+        for name in self.model_types:
+            feat = self.extractors[name](pixel_values)
+            projected_feat = self.projections[name](feat)
+            projected_features.append(projected_feat)
+
+        # Add pairwise differences
+        diff_features = self._compute_differences(projected_features)
+
+        # Concatenate all
+        all_features = projected_features + diff_features
+        return torch.cat(all_features, dim=-1)
+
+    @torch.no_grad()
+    def extract_cache_batch(self, pixel_values: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """Cache features for offline fusion training."""
+        return {
+            f"feat_{name}": self.extractors[name](pixel_values)
+            for name in self.model_types
+        }
+
+    def forward_from_cache(self, cached_inputs: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """Fuse cached features with differences."""
+        # Get projected features
+        projected_features = []
+        for name in self.model_types:
+            feat = cached_inputs[f"feat_{name}"]
+            projected_feat = self.projections[name](feat)
+            projected_features.append(projected_feat)
+
+        # Add pairwise differences
+        diff_features = self._compute_differences(projected_features)
+
+        # Concatenate all
+        all_features = projected_features + diff_features
+        return torch.cat(all_features, dim=-1)
+
+    def release_backbones(self):
+        """Drop frozen backbones once their outputs are cached."""
+        self.extractors = None
+
+
+class MultiModelHadamardExtractor(nn.Module):
+    """Baseline E: Concat with element-wise products (Hadamard interaction).
+
+    Formula: z = [z_c; z_d; z_m; z_c⊙z_d; z_c⊙z_m; z_d⊙z_m]
+
+    Original features preserve individual information.
+    Product terms explicitly model which dimensions co-activate.
+    """
+
+    def __init__(
+        self,
+        model_types: Sequence[str],
+        proj_dim: int = 256,
+        model_dir: str = "./models",
+    ):
+        super().__init__()
+        self.model_types = list(model_types)
+        if len(self.model_types) < 2:
+            raise ValueError("Fusion requires at least two models.")
+
+        self.extractors = nn.ModuleDict({
+            name: FeatureExtractor(name, normalize_input=True, model_dir=model_dir)
+            for name in self.model_types
+        })
+
+        # Individual projections for each model
+        self.projections = nn.ModuleDict({
+            name: nn.Sequential(
+                nn.LayerNorm(self.extractors[name].feature_dim),
+                nn.Linear(self.extractors[name].feature_dim, proj_dim)
+            )
+            for name in self.model_types
+        })
+
+        num_models = len(self.model_types)
+        # Original features + pairwise products
+        num_pairs = num_models * (num_models - 1) // 2
+        self.feature_dim = proj_dim * (num_models + num_pairs)
+        self.proj_dim = proj_dim
+        self.trainable = True
+
+    def _compute_products(self, features: List[torch.Tensor]) -> List[torch.Tensor]:
+        """Compute pairwise element-wise products between features."""
+        products = []
+        for i in range(len(features)):
+            for j in range(i + 1, len(features)):
+                products.append(features[i] * features[j])
+        return products
+
+    def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
+        # Get projected features
+        projected_features = []
+        for name in self.model_types:
+            feat = self.extractors[name](pixel_values)
+            projected_feat = self.projections[name](feat)
+            projected_features.append(projected_feat)
+
+        # Add pairwise products
+        product_features = self._compute_products(projected_features)
+
+        # Concatenate all
+        all_features = projected_features + product_features
+        return torch.cat(all_features, dim=-1)
+
+    @torch.no_grad()
+    def extract_cache_batch(self, pixel_values: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """Cache features for offline fusion training."""
+        return {
+            f"feat_{name}": self.extractors[name](pixel_values)
+            for name in self.model_types
+        }
+
+    def forward_from_cache(self, cached_inputs: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """Fuse cached features with Hadamard interactions."""
+        # Get projected features
+        projected_features = []
+        for name in self.model_types:
+            feat = cached_inputs[f"feat_{name}"]
+            projected_feat = self.projections[name](feat)
+            projected_features.append(projected_feat)
+
+        # Add pairwise products
+        product_features = self._compute_products(projected_features)
+
+        # Concatenate all
+        all_features = projected_features + product_features
+        return torch.cat(all_features, dim=-1)
+
+    def release_backbones(self):
+        """Drop frozen backbones once their outputs are cached."""
+        self.extractors = None
+
+
+class MultiModelLateFusionExtractor(nn.Module):
+    """Baseline F: Late Fusion (logit-level fusion/ensemble).
+
+    Instead of fusing features, each encoder gets its own classifier.
+    Final prediction is the average of all classifier logits.
+
+    Formula: y = (y_c + y_d + y_m) / 3
+
+    This is NOT a feature-level fusion. It's an ensemble method that
+    proves whether fusion gains come from representation complementarity
+    or just from voting effects.
+
+    Note: This requires special handling in the training loop since
+    it maintains multiple classifiers instead of one.
+    """
+
+    def __init__(
+        self,
+        model_types: Sequence[str],
+        num_classes: int,
+        model_dir: str = "./models",
+    ):
+        super().__init__()
+        self.model_types = list(model_types)
+        if len(self.model_types) < 2:
+            raise ValueError("Fusion requires at least two models.")
+
+        self.extractors = nn.ModuleDict({
+            name: FeatureExtractor(name, normalize_input=True, model_dir=model_dir)
+            for name in self.model_types
+        })
+
+        self.num_classes = num_classes
+        self.feature_dims = {
+            name: self.extractors[name].feature_dim
+            for name in self.model_types
+        }
+
+        # This extractor doesn't produce a single feature_dim
+        # It needs special handling in the training loop
+        self.trainable = False  # Extractors are frozen
+        self.requires_multiple_classifiers = True  # Signal to training loop
+
+    @torch.no_grad()
+    def extract_cache_batch(self, pixel_values: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """Cache features for each model separately."""
+        return {
+            f"feat_{name}": self.extractors[name](pixel_values)
+            for name in self.model_types
+        }
+
+    def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
+        """Extract all features - returns dict for late fusion handling."""
+        # For late fusion, we return a dict instead of single tensor
+        # The training loop needs to handle this specially
+        return {
+            name: self.extractors[name](pixel_values)
+            for name in self.model_types
+        }
+
+    def forward_from_cache(self, cached_inputs: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        """Return cached features as dict for late fusion."""
+        return {
+            name: cached_inputs[f"feat_{name}"]
+            for name in self.model_types
+        }
 
     def release_backbones(self):
         """Drop frozen backbones once their outputs are cached."""
@@ -937,7 +1560,8 @@ def get_extractor(
 
     Args:
         model_type: Single model type (`mae`, `clip`, `dino`) or `fusion`.
-        fusion_method: One of `concat`, `comm`, `mmvit` when model_type is `fusion`.
+        fusion_method: One of `concat`, `proj_concat`, `weighted_sum`, `gated`,
+                      `difference_concat`, `hadamard_concat`, `comm`, `mmvit` when model_type is `fusion`.
         fusion_models: List of model types for fusion, e.g. ["clip", "dino"].
         fusion_kwargs: Extra kwargs for paper-inspired classifier fusion implementations.
     """
@@ -948,12 +1572,52 @@ def get_extractor(
     fusion_method = fusion_method.lower()
     fusion_kwargs = {} if fusion_kwargs is None else dict(fusion_kwargs)
 
+    # Simple baselines
     if fusion_method == "concat":
         return MultiModelConcatExtractor(
             model_types,
             output_dim=fusion_kwargs.get("fusion_output_dim"),
             model_dir=model_dir,
         )
+    if fusion_method == "proj_concat":
+        return MultiModelProjectedConcatExtractor(
+            model_types,
+            proj_dim=fusion_kwargs.get("proj_dim", 256),
+            model_dir=model_dir,
+        )
+    if fusion_method == "weighted_sum":
+        return MultiModelWeightedSumExtractor(
+            model_types,
+            proj_dim=fusion_kwargs.get("proj_dim", 512),
+            model_dir=model_dir,
+        )
+    if fusion_method == "gated":
+        return MultiModelGatedFusionExtractor(
+            model_types,
+            proj_dim=fusion_kwargs.get("proj_dim", 512),
+            hidden_dim=fusion_kwargs.get("hidden_dim", 128),
+            model_dir=model_dir,
+        )
+    if fusion_method == "difference_concat":
+        return MultiModelDifferenceAwareExtractor(
+            model_types,
+            proj_dim=fusion_kwargs.get("proj_dim", 256),
+            model_dir=model_dir,
+        )
+    if fusion_method == "hadamard_concat":
+        return MultiModelHadamardExtractor(
+            model_types,
+            proj_dim=fusion_kwargs.get("proj_dim", 256),
+            model_dir=model_dir,
+        )
+    if fusion_method == "late_fusion":
+        return MultiModelLateFusionExtractor(
+            model_types,
+            num_classes=fusion_kwargs.get("num_classes", 100),
+            model_dir=model_dir,
+        )
+
+    # Paper-inspired methods
     if fusion_method == "comm":
         return COMMStrictFusionExtractor(
             model_types=model_types,
@@ -974,5 +1638,7 @@ def get_extractor(
         )
 
     raise ValueError(
-        f"Unsupported fusion method: {fusion_method}. Choose from ['concat', 'comm', 'mmvit']."
+        f"Unsupported fusion method: {fusion_method}. "
+        f"Choose from ['concat', 'proj_concat', 'weighted_sum', 'gated', "
+        f"'difference_concat', 'hadamard_concat', 'comm', 'mmvit']."
     )

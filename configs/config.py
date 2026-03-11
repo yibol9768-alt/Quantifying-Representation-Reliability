@@ -6,6 +6,7 @@ from typing import Dict, List, Optional
 
 # Dataset configurations
 DATASET_CONFIGS = {
+    # Existing datasets
     "cifar10": {
         "num_classes": 10,
         "img_size": 32,
@@ -51,6 +52,57 @@ DATASET_CONFIGS = {
         "img_size": 224,
         "description": "CUB-200-2011: 200 bird species"
     },
+    # CLIP paper datasets
+    "mnist": {
+        "num_classes": 10,
+        "img_size": 224,
+        "description": "MNIST: 10 handwritten digit classes"
+    },
+    "svhn": {
+        "num_classes": 10,
+        "img_size": 224,
+        "description": "SVHN: 10 street view house number classes"
+    },
+    "sun397": {
+        "num_classes": 397,
+        "img_size": 224,
+        "description": "SUN397: 397 scene categories"
+    },
+    "stanford_cars": {
+        "num_classes": 196,
+        "img_size": 224,
+        "description": "Stanford Cars: 196 car classes"
+    },
+    "dtd": {
+        "num_classes": 47,
+        "img_size": 224,
+        "description": "DTD: 47 texture categories"
+    },
+    "eurosat": {
+        "num_classes": 10,
+        "img_size": 224,
+        "description": "EuroSAT: 10 satellite image classes"
+    },
+    "gtsrb": {
+        "num_classes": 43,
+        "img_size": 224,
+        "description": "GTSRB: 43 traffic sign classes"
+    },
+    "country211": {
+        "num_classes": 211,
+        "img_size": 224,
+        "description": "Country211: 211 country identification"
+    },
+    "aircraft": {
+        "num_classes": 100,
+        "img_size": 224,
+        "description": "FGVC Aircraft: 100 aircraft types"
+    },
+    "resisc45": {
+        "num_classes": 45,
+        "img_size": 224,
+        "description": "Resisc45: 45 remote sensing scene classes"
+    },
 }
 
 
@@ -84,9 +136,26 @@ class Config:
 
     # Feature dimensions
     FEATURE_DIMS: Dict = field(default_factory=lambda: {
+        # Vision Transformer series
+        "vit": 768,
+        "deit": 768,
+        "swin": 1024,
+        "beit": 768,
+        "eva": 768,
+        # Self-supervised series
         "mae": 768,
-        "clip": 768,
+        "mae_large": 1024,
         "dino": 768,
+        "dino_large": 1024,
+        # CLIP series
+        "clip": 768,
+        "clip_large": 768,
+        "openclip": 512,
+        # Modern CNN
+        "convnext": 1024,
+        # Multimodal models
+        "sam": 768,
+        "albef": 768,
     })
 
     @property

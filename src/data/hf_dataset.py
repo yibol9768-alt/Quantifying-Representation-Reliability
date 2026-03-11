@@ -9,6 +9,7 @@ from pathlib import Path
 
 # Dataset info
 DATASET_INFO = {
+    # Existing datasets
     "cifar10": {"num_classes": 10},
     "cifar100": {"num_classes": 100},
     "stl10": {"num_classes": 10},
@@ -18,14 +19,35 @@ DATASET_INFO = {
     "pets": {"num_classes": 37},
     "tiny_imagenet": {"num_classes": 200},
     "cub200": {"num_classes": 200},
+    # CLIP paper datasets
+    "mnist": {"num_classes": 10},
+    "svhn": {"num_classes": 10},
+    "sun397": {"num_classes": 397},
+    "stanford_cars": {"num_classes": 196},
+    "dtd": {"num_classes": 47},
+    "eurosat": {"num_classes": 10},
+    "gtsrb": {"num_classes": 43},
+    "country211": {"num_classes": 211},
+    "aircraft": {"num_classes": 100},
+    "resisc45": {"num_classes": 45},
 }
 
 
-def get_transforms(model_type: str = "mae", train: bool = False):
-    """Get transforms based on model type."""
+def get_transforms(model_type: str = "mae", train: bool = False, dataset: str = None):
+    """Get transforms based on model type and dataset.
+
+    Args:
+        model_type: Model type for normalization (mae, clip, fusion, etc.)
+        train: Whether to use training augmentations
+        dataset: Dataset name for special handling (e.g., MNIST grayscale)
+
+    Returns:
+        transforms.Compose object
+    """
+    # Get normalization based on model type
     if model_type == "fusion":
         normalize = None
-    elif model_type == "clip":
+    elif model_type in ("clip", "clip_large", "openclip"):
         mean = (0.48145466, 0.4578275, 0.40821073)
         std = (0.26862954, 0.26130258, 0.27577711)
         normalize = transforms.Normalize(mean=mean, std=std)
@@ -34,22 +56,42 @@ def get_transforms(model_type: str = "mae", train: bool = False):
         std = (0.229, 0.224, 0.225)
         normalize = transforms.Normalize(mean=mean, std=std)
 
+    # MNIST special handling: grayscale to RGB conversion
+    is_mnist = dataset == "mnist"
+
     if train:
-        ops = [
-            transforms.Resize(256),
-            transforms.RandomCrop(224),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-        ]
+        ops = []
+        if is_mnist:
+            # MNIST is 28x28, resize to 256 first
+            ops.extend([
+                transforms.Resize(256),
+                transforms.RandomCrop(224),
+                transforms.Grayscale(num_output_channels=3),  # Convert to 3 channels
+            ])
+        else:
+            ops.extend([
+                transforms.Resize(256),
+                transforms.RandomCrop(224),
+                transforms.RandomHorizontalFlip(),
+            ])
+        ops.append(transforms.ToTensor())
         if normalize is not None:
             ops.append(normalize)
         return transforms.Compose(ops)
     else:
-        ops = [
-            transforms.Resize(256),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
-        ]
+        ops = []
+        if is_mnist:
+            ops.extend([
+                transforms.Resize(256),
+                transforms.CenterCrop(224),
+                transforms.Grayscale(num_output_channels=3),  # Convert to 3 channels
+            ])
+        else:
+            ops.extend([
+                transforms.Resize(256),
+                transforms.CenterCrop(224),
+            ])
+        ops.append(transforms.ToTensor())
         if normalize is not None:
             ops.append(normalize)
         return transforms.Compose(ops)
@@ -115,8 +157,8 @@ def get_dataloaders(
     Returns:
         train_loader, test_loader
     """
-    train_tf = get_transforms(model_type, train=True)
-    test_tf = get_transforms(model_type, train=False)
+    train_tf = get_transforms(model_type, train=True, dataset=dataset)
+    test_tf = get_transforms(model_type, train=False, dataset=dataset)
 
     dataset_path = Path(data_dir) / dataset
 
