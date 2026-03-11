@@ -5,7 +5,7 @@
 # 系统融合实验运行脚本
 # 用法: bash experiments/run_fusion_experiments.sh
 
-set -e  # 遇到错误立即退出
+set -euo pipefail
 
 # ------------------------------------------------
 # 1. 初始化
@@ -18,6 +18,15 @@ source "${SCRIPT_DIR}/config.sh"
 
 # 切换到项目根目录
 cd "$PROJECT_ROOT"
+
+if command -v python >/dev/null 2>&1; then
+    PYTHON_BIN="python"
+elif command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="python3"
+else
+    echo "ERROR: Neither python nor python3 was found in PATH"
+    exit 1
+fi
 
 echo "========================================"
 echo "Starting Fusion Experiments"
@@ -35,9 +44,17 @@ if [ ! -d "${STORAGE_DIR}/models" ]; then
     exit 1
 fi
 
-if [ ! -d "${STORAGE_DIR}/data/${DATASET}" ]; then
-    echo "ERROR: Dataset ${DATASET} not found at ${STORAGE_DIR}/data/${DATASET}"
-    echo "Please run: python download_models.py --${DATASET} --storage_dir ${STORAGE_DIR}"
+missing_datasets=()
+for dataset in "${CLIP_DATASETS[@]}"; do
+    if [ ! -d "${STORAGE_DIR}/data/${dataset}" ]; then
+        missing_datasets+=("${dataset}")
+    fi
+done
+
+if [ ${#missing_datasets[@]} -gt 0 ]; then
+    echo "ERROR: Missing datasets under ${STORAGE_DIR}/data:"
+    printf '  - %s\n' "${missing_datasets[@]}"
+    echo "Please download them first with download_models.py"
     exit 1
 fi
 echo "✓ Models and data found"
@@ -63,7 +80,7 @@ run_experiment() {
     echo ">>> Log: ${log_file}"
 
     # 运行实验
-    python main.py \
+    "${PYTHON_BIN}" main.py \
         --dataset "${dataset}" \
         --model fusion \
         --fusion_method "${method}" \
@@ -95,7 +112,7 @@ run_single_model() {
     echo ">>> Log: ${log_file}"
 
     # 运行单模型实验
-    python main.py \
+    "${PYTHON_BIN}" main.py \
         --dataset "${dataset}" \
         --model "${model}" \
         --storage_dir "${STORAGE_DIR}" \
@@ -122,15 +139,17 @@ run_single_model() {
 # 计算总实验数
 TOTAL_DATASETS=${#CLIP_DATASETS[@]}
 TOTAL_SINGLE_MODELS=1  # 只跑CLIP作为单模型baseline
-TOTAL_MODEL_COMBOS=10   # 1-10个模型
+TOTAL_MODEL_COMBOS=9   # 2-10个模型
 TOTAL_METHODS=${#ALL_METHODS[@]}
 TOTAL_EXPERIMENTS=$((TOTAL_DATASETS * (TOTAL_SINGLE_MODELS + TOTAL_MODEL_COMBOS * TOTAL_METHODS)))
+SUCCESS_COUNT=0
+FAILED_COUNT=0
 
 echo "========================================"
 echo "Experiment Plan"
 echo "========================================"
 echo "Datasets: ${TOTAL_DATASETS} (${CLIP_DATASETS[*]})"
-echo "Model counts: 1-10"
+echo "Model counts: 2-10"
 echo "Fusion methods: ${TOTAL_METHODS} (${ALL_METHODS[*]})"
 echo "Total experiments: ${TOTAL_EXPERIMENTS}"
 echo "========================================"
@@ -145,7 +164,11 @@ echo "========================================"
 for dataset in "${CLIP_DATASETS[@]}"; do
     echo ""
     echo "--- Dataset: ${dataset} ---"
-    run_single_model "$dataset" "clip"
+    if run_single_model "$dataset" "clip"; then
+        ((SUCCESS_COUNT+=1))
+    else
+        ((FAILED_COUNT+=1))
+    fi
     echo ""
 done
 
@@ -157,7 +180,6 @@ echo "========================================"
 
 # 定义模型数量和对应组合
 declare -a model_combinations=(
-    "1:${MODELS_1}"
     "2:${MODELS_2}"
     "3:${MODELS_3}"
     "4:${MODELS_4}"
@@ -185,7 +207,11 @@ for dataset in "${CLIP_DATASETS[@]}"; do
         echo "--- ${dataset}: ${num_models} model(s) ---"
 
         for method in "${ALL_METHODS[@]}"; do
-            run_experiment "$dataset" "$num_models" "$models" "$method"
+            if run_experiment "$dataset" "$num_models" "$models" "$method"; then
+                ((SUCCESS_COUNT+=1))
+            else
+                ((FAILED_COUNT+=1))
+            fi
             echo ""
         done
     done
@@ -196,7 +222,7 @@ done
 # ------------------------------------------------
 echo ""
 echo "[Step 4] Collecting results..."
-python "${SCRIPT_DIR}/collect_results.py" \
+"${PYTHON_BIN}" "${SCRIPT_DIR}/collect_results.py" \
     --results_dir "${RESULTS_DIR}" \
     --output "${RESULTS_DIR}/results_table.csv" \
     --markdown "${RESULTS_DIR}/results_summary.md"
@@ -213,4 +239,6 @@ echo "  - Datasets: ${TOTAL_DATASETS}"
 echo "  - Single model experiments: ${TOTAL_DATASETS}"
 echo "  - Fusion experiments: $((TOTAL_DATASETS * TOTAL_MODEL_COMBOS * TOTAL_METHODS))"
 echo "  - Total: ${TOTAL_EXPERIMENTS}"
+echo "  - Success: ${SUCCESS_COUNT}"
+echo "  - Failed: ${FAILED_COUNT}"
 echo "========================================"

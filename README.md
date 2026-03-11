@@ -1,6 +1,6 @@
 # Feature Classification with Pretrained Vision Models
 
-使用 HuggingFace Transformers 的预训练模型提取特征，配合 MLP 分类器。支持15个预训练视觉模型和19个数据集。
+使用 HuggingFace Transformers 的预训练模型提取特征，配合 MLP 分类器。当前默认支持 12 个可稳定下载且与当前加载器实现一致的预训练视觉模型，以及 19 个数据集。
 
 ## 国内环境推荐流程
 
@@ -62,9 +62,18 @@ python -m pip install -r requirements.txt \
 python -c "import torch, torchvision, transformers; print(torch.__version__)"
 ```
 
+如果你的系统里没有 `python` 命令，就把下面所有命令里的 `python` 替换成 `python3`。
+
 ### 第 4 步：下载模型和数据
 
-如果你想下载所有15个模型和所有支持的数据集：
+先安装 Hugging Face CLI。2026 年更推荐使用 `hf`，`download_models.py` 也会优先调用它：
+
+```bash
+python -m pip install -U huggingface_hub
+hf --help
+```
+
+如果你想下载所有当前支持的 12 个模型和所有支持的数据集：
 
 ```bash
 # 下载所有模型
@@ -107,19 +116,16 @@ ls "$STORAGE_DIR/data"
 $STORAGE_DIR/models/
 ├── vit-mae-base/           # MAE
 ├── clip-vit-base-patch16/  # CLIP
-├── dinov2-base/            # DINO
+├── dinov2-base/            # DINOv2-Base
 ├── vit-base-patch16/       # ViT
 ├── deit-base/              # DeiT
 ├── swin-base/              # Swin
 ├── beit-base/              # BEiT
-├── eva-base/               # EVA
 ├── vit-mae-large/          # MAE-Large
 ├── clip-vit-large/         # CLIP-Large
 ├── dinov2-large/           # DINOv2-Large
 ├── openclip-vit-b32/       # OpenCLIP
-├── convnext-base/          # ConvNeXt
-├── sam-vit-base/           # SAM
-└── albef-base/             # ALBEF
+└── convnext-base/          # ConvNeXt
 
 $STORAGE_DIR/data/
 ├── cifar10/
@@ -156,28 +162,24 @@ python main.py --dataset cifar100 --model clip \
 | MAE-Large | `--model mae_large` | 1024 | `<storage_dir>/models/vit-mae-large` | Facebook MAE Large |
 | DINO | `--model dino` | 768 | `<storage_dir>/models/dinov2-base` | Facebook DINOv2 Base |
 | DINOv2-Large | `--model dino_large` | 1024 | `<storage_dir>/models/dinov2-large` | Facebook DINOv2 Large |
-| EVA | `--model eva` | 768 | `<storage_dir>/models/eva-base` | EVA自监督模型 |
 
 ### CLIP 系列
 
 | 模型 | 参数 | 特征维度 | 本地路径 | 说明 |
 |------|------|----------|----------|------|
 | CLIP | `--model clip` | 768 | `<storage_dir>/models/clip-vit-base-patch16` | OpenAI CLIP ViT-B/16 |
-| CLIP-Large | `--model clip_large` | 768 | `<storage_dir>/models/clip-vit-large` | OpenAI CLIP ViT-L/14 |
-| OpenCLIP | `--model openclip` | 512 | `<storage_dir>/models/openclip-vit-b32` | LAION CLIP ViT-B/32 |
+| CLIP-Large | `--model clip_large` | 1024 | `<storage_dir>/models/clip-vit-large` | OpenAI CLIP ViT-L/14 |
+| OpenCLIP | `--model openclip` | 768 | `<storage_dir>/models/openclip-vit-b32` | LAION CLIP ViT-B/32 (`laion2B-s34B-b79K`) |
 
 ### 现代 CNN
 
 | 模型 | 参数 | 特征维度 | 本地路径 | 说明 |
 |------|------|----------|----------|------|
-| ConvNeXt | `--model convnext` | 1024 | `<storage_dir>/models/convnext-base` | Facebook ConvNeXt Base |
+| ConvNeXt | `--model convnext` | 1024 | `<storage_dir>/models/convnext-base` | Facebook ConvNeXt Base 224 |
 
-### 多模态系列
-
-| 模型 | 参数 | 特征维度 | 本地路径 | 说明 |
-|------|------|----------|----------|------|
-| SAM | `--model sam` | 768 | `<storage_dir>/models/sam-vit-base` | Meta SAM Encoder (仅vision encoder) |
-| ALBEF | `--model albef` | 768 | `<storage_dir>/models/albef-base` | Salesforce ALBEF (仅vision encoder) |
+说明：
+- 旧版本 README 里的 `EVA`、`SAM`、`ALBEF` 已从默认支持列表移除。
+- 原因分别是：仓库/权重入口在 2026 年已经不稳定，或与当前分类特征提取器的 `transformers` 加载类并不匹配，容易出现“能下载但不能正确加载/提特征”的问题。
 
 ## 数据集说明
 
@@ -336,7 +338,11 @@ python main.py --dataset svhn --model dino \
 
 ### 多模型融合
 
-支持从15个模型中任意选择2-3个进行融合：
+支持从当前 12 个可验证模型中任意选择 2 个及以上进行融合。
+
+建议：
+- `concat`、`proj_concat`、`weighted_sum`、`gated`、`difference_concat`、`hadamard_concat` 适合 2-10 个模型的横向实验。
+- `comm`、`mmvit` 更适合 2-3 个以 ViT/CLIP/DINO 为主的 token 型 backbone。
 
 ```bash
 # 两模型融合
@@ -481,7 +487,7 @@ bash experiments/run_fusion_experiments.sh
 
 实验系统地评估：
 - **模型数量影响**：1 → 10 个模型
-- **融合方法对比**：8 种方法的横向对比
+- **融合方法对比**：6 种 baseline 方法的横向对比
 - **结果自动收集**：生成 CSV 和 Markdown 报告
 
 ### 实验矩阵
@@ -489,10 +495,10 @@ bash experiments/run_fusion_experiments.sh
 | 模型数 | 模型组合 | 融合方法数 | 实验总数 |
 |--------|----------|------------|----------|
 | 1 | CLIP | 1 | 1 |
-| 2 | CLIP + DINO | 8 | 8 |
-| 3 | MAE + CLIP + DINO | 8 | 8 |
-| 4-10 | 逐步添加新模型 | 8×7 | 56 |
-| **总计** | - | - | **73** |
+| 2 | CLIP + DINO | 6 | 6 |
+| 3 | MAE + CLIP + DINO | 6 | 6 |
+| 4-10 | 逐步添加新模型 | 6×7 | 42 |
+| **总计** | - | - | **55** |
 
 详细说明见：[experiments/README.md](experiments/README.md)
 
@@ -527,50 +533,42 @@ ${STORAGE_DIR}/results/${EXPERIMENT_NAME}/
 
 ## 手动下载模型
 
-如果自动脚本下载模型失败，可以手动执行：
+如果自动脚本下载模型失败，可以手动执行。这里统一使用当前官方推荐的 `hf download`；如果你的环境里只有旧版 CLI，也可以把 `hf download` 换成 `huggingface-cli download`。
 
 ```bash
 export HF_ENDPOINT=https://hf-mirror.com
 
 # Vision Transformer 系列
-huggingface-cli download google/vit-base-patch16-224 \
+hf download google/vit-base-patch16-224 \
     --local-dir "$STORAGE_DIR/models/vit-base-patch16"
-huggingface-cli download facebook/deit-base-patch16-224 \
+hf download facebook/deit-base-patch16-224 \
     --local-dir "$STORAGE_DIR/models/deit-base"
-huggingface-cli download microsoft/swin-base-patch4-window7-224 \
+hf download microsoft/swin-base-patch4-window7-224 \
     --local-dir "$STORAGE_DIR/models/swin-base"
-huggingface-cli download microsoft/beit-base-patch16-224-pt22k \
+hf download microsoft/beit-base-patch16-224-pt22k \
     --local-dir "$STORAGE_DIR/models/beit-base"
-huggingface-cli download nioevax/eva-base-patch16-224 \
-    --local-dir "$STORAGE_DIR/models/eva-base"
 
 # 自监督系列
-huggingface-cli download facebook/vit-mae-base \
+hf download facebook/vit-mae-base \
     --local-dir "$STORAGE_DIR/models/vit-mae-base"
-huggingface-cli download facebook/vit-mae-large \
+hf download facebook/vit-mae-large \
     --local-dir "$STORAGE_DIR/models/vit-mae-large"
-huggingface-cli download facebook/dinov2-base \
+hf download facebook/dinov2-base \
     --local-dir "$STORAGE_DIR/models/dinov2-base"
-huggingface-cli download facebook/dinov2-large \
+hf download facebook/dinov2-large \
     --local-dir "$STORAGE_DIR/models/dinov2-large"
 
 # CLIP 系列
-huggingface-cli download openai/clip-vit-base-patch16 \
+hf download openai/clip-vit-base-patch16 \
     --local-dir "$STORAGE_DIR/models/clip-vit-base-patch16"
-huggingface-cli download openai/clip-vit-large-patch14 \
+hf download openai/clip-vit-large-patch14 \
     --local-dir "$STORAGE_DIR/models/clip-vit-large"
-huggingface-cli download laion/CLIP-ViT-B-32 \
+hf download laion/CLIP-ViT-B-32-laion2B-s34B-b79K \
     --local-dir "$STORAGE_DIR/models/openclip-vit-b32"
 
 # 现代 CNN
-huggingface-cli download facebook/convnext-base \
+hf download facebook/convnext-base-224 \
     --local-dir "$STORAGE_DIR/models/convnext-base"
-
-# 多模态系列
-huggingface-cli download facebook/sam-vit-base \
-    --local-dir "$STORAGE_DIR/models/sam-vit-base"
-huggingface-cli download Salesforce/albef-base \
-    --local-dir "$STORAGE_DIR/models/albef-base"
 ```
 
 ## 目录结构
@@ -601,7 +599,7 @@ project/
 
 ```text
 <storage_dir>/
-├── models/          # 15个预训练模型
+├── models/          # 12个默认支持的预训练模型
 │   ├── vit-mae-base/
 │   ├── clip-vit-base-patch16/
 │   ├── dinov2-base/

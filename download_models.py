@@ -1,7 +1,7 @@
 """Download models and datasets for the server."""
 
-import os
 import subprocess
+import shutil
 from pathlib import Path
 
 DEFAULT_STORAGE_DIR = "."
@@ -15,11 +15,22 @@ def download_model(model_name: str, local_dir: str):
 
     Path(local_dir).parent.mkdir(parents=True, exist_ok=True)
 
-    cmd = [
-        "huggingface-cli", "download",
-        model_name,
-        "--local-dir", local_dir
-    ]
+    if shutil.which("hf") is not None:
+        cmd = [
+            "hf", "download",
+            model_name,
+            "--local-dir", local_dir,
+        ]
+    elif shutil.which("huggingface-cli") is not None:
+        cmd = [
+            "huggingface-cli", "download",
+            model_name,
+            "--local-dir", local_dir,
+        ]
+    else:
+        print("✗ Neither `hf` nor `huggingface-cli` is installed.")
+        print("  Install one with: pip install -U huggingface_hub")
+        return False
 
     try:
         subprocess.run(cmd, check=True)
@@ -46,7 +57,7 @@ def download_all_models(storage_dir: str = DEFAULT_STORAGE_DIR):
     """Download all required models."""
     paths = get_storage_paths(storage_dir)
     models = {
-        # Existing models
+        # Supported backbones validated by the current extractor implementation.
         "facebook/vit-mae-base": str(paths["models"] / "vit-mae-base"),
         "openai/clip-vit-base-patch16": str(paths["models"] / "clip-vit-base-patch16"),
         "facebook/dinov2-base": str(paths["models"] / "dinov2-base"),
@@ -55,18 +66,14 @@ def download_all_models(storage_dir: str = DEFAULT_STORAGE_DIR):
         "facebook/deit-base-patch16-224": str(paths["models"] / "deit-base"),
         "microsoft/swin-base-patch4-window7-224": str(paths["models"] / "swin-base"),
         "microsoft/beit-base-patch16-224-pt22k": str(paths["models"] / "beit-base"),
-        "nioevax/eva-base-patch16-224": str(paths["models"] / "eva-base"),
         # Large variants
         "facebook/vit-mae-large": str(paths["models"] / "vit-mae-large"),
         "openai/clip-vit-large-patch14": str(paths["models"] / "clip-vit-large"),
         "facebook/dinov2-large": str(paths["models"] / "dinov2-large"),
         # CLIP series
-        "laion/CLIP-ViT-B-32": str(paths["models"] / "openclip-vit-b32"),
+        "laion/CLIP-ViT-B-32-laion2B-s34B-b79K": str(paths["models"] / "openclip-vit-b32"),
         # Modern CNN
-        "facebook/convnext-base": str(paths["models"] / "convnext-base"),
-        # Multimodal models
-        "facebook/sam-vit-base": str(paths["models"] / "sam-vit-base"),
-        "Salesforce/albef-base": str(paths["models"] / "albef-base"),
+        "facebook/convnext-base-224": str(paths["models"] / "convnext-base"),
     }
 
     print("="*60)

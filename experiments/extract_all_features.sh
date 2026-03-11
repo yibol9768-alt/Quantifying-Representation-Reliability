@@ -63,7 +63,6 @@ ALL_MODELS=(
     "beit"            # BEiT
     "deit"            # DeiT
     "convnext"        # 现代CNN
-    "eva"             # EVA
     "mae_large"       # 大模型
     "dino_large"      # 大模型
     "clip_large"      # CLIP大模型

@@ -19,9 +19,7 @@ from transformers import (
     SwinModel,
     BeitModel,
     DeiTModel,
-    ConvNextV2Model,
-    SamModel,
-    BlipModel,
+    ConvNextModel,
 )
 
 
@@ -132,11 +130,6 @@ class FeatureExtractor(nn.Module):
             "hf_name": "microsoft/beit-base-patch16-224-pt22k",
             "dim": 768,
         },
-        "eva": {
-            "path": "eva-base",
-            "hf_name": "nioevax/eva-base-patch16-224",
-            "dim": 768,
-        },
         # Self-supervised series
         "mae": {
             "path": "vit-mae-base",
@@ -167,29 +160,18 @@ class FeatureExtractor(nn.Module):
         "clip_large": {
             "path": "clip-vit-large",
             "hf_name": "openai/clip-vit-large-patch14",
-            "dim": 768,
+            "dim": 1024,
         },
         "openclip": {
             "path": "openclip-vit-b32",
-            "hf_name": "laion/CLIP-ViT-B-32",
-            "dim": 512,
+            "hf_name": "laion/CLIP-ViT-B-32-laion2B-s34B-b79K",
+            "dim": 768,
         },
         # Modern CNN
         "convnext": {
             "path": "convnext-base",
-            "hf_name": "facebook/convnext-base",
+            "hf_name": "facebook/convnext-base-224",
             "dim": 1024,
-        },
-        # Multimodal models (vision encoder only)
-        "sam": {
-            "path": "sam-vit-base",
-            "hf_name": "facebook/sam-vit-base",
-            "dim": 768,
-        },
-        "albef": {
-            "path": "albef-base",
-            "hf_name": "Salesforce/albef-base",
-            "dim": 768,
         },
     }
 
@@ -212,7 +194,7 @@ class FeatureExtractor(nn.Module):
             raise FileNotFoundError(
                 f"Model not found at {model_path}\n"
                 f"Please download manually:\n"
-                f"  huggingface-cli download {config['hf_name']} --local-dir {model_path}\n"
+                f"  hf download {config['hf_name']} --local-dir {model_path}\n"
                 f"See README for details."
             )
 
@@ -240,17 +222,7 @@ class FeatureExtractor(nn.Module):
         elif model_type == "deit":
             self.model = DeiTModel.from_pretrained(str(model_path), local_files_only=True)
         elif model_type == "convnext":
-            self.model = ConvNextV2Model.from_pretrained(str(model_path), local_files_only=True)
-        elif model_type == "eva":
-            self.model = ViTModel.from_pretrained(str(model_path), local_files_only=True)
-        elif model_type == "sam":
-            # SAM: use only the vision encoder for feature extraction
-            sam_model = SamModel.from_pretrained(str(model_path), local_files_only=True)
-            self.model = sam_model.vision_encoder
-        elif model_type == "albef":
-            # ALBEF: use only the vision encoder
-            albef_model = BlipModel.from_pretrained(str(model_path), local_files_only=True)
-            self.model = albef_model.vision_model
+            self.model = ConvNextModel.from_pretrained(str(model_path), local_files_only=True)
         else:
             raise ValueError(f"Unsupported model type: {model_type}")
 

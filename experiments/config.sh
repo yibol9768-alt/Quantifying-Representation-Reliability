@@ -36,8 +36,8 @@ export CLIP_DATASETS=(
 # ------------------------------------------------
 # 模型组合设计
 # ------------------------------------------------
-# 原则：从15个模型中选取代表性组合
-# - 覆盖不同预训练范式（自监督、监督、多模态）
+# 原则：从当前 12 个可稳定下载和加载的模型中选取代表性组合
+# - 覆盖不同预训练范式（自监督、监督、对比学习）
 # - 覆盖不同架构（ViT、Swin、CNN）
 # - 逐步增加模型数量，观察融合效果变化
 
@@ -65,11 +65,11 @@ export MODELS_7="mae,clip,dino,vit,swin,convnext,deit"
 # 8个模型 - 加入Bootstrapped ImageText
 export MODELS_8="mae,clip,dino,vit,swin,convnext,deit,beit"
 
-# 9个模型 - 加入EVA自监督
-export MODELS_9="mae,clip,dino,vit,swin,convnext,deit,beit,eva"
+# 9个模型 - 加入 OpenCLIP
+export MODELS_9="mae,clip,dino,vit,swin,convnext,deit,beit,openclip"
 
 # 10个模型 - 加入大模型
-export MODELS_10="mae,clip,dino,vit,swin,convnext,deit,beit,eva,mae_large"
+export MODELS_10="mae,clip,dino,vit,swin,convnext,deit,beit,openclip,mae_large"
 
 # ------------------------------------------------
 # 融合方法列表（只使用简单baseline方法）
@@ -103,7 +103,7 @@ echo "========================================"
 echo "Fusion Experiment Configuration"
 echo "========================================"
 echo "Storage Dir: ${STORAGE_DIR}"
-echo "Dataset: ${DATASET}"
+echo "Datasets: ${CLIP_DATASETS[*]}"
 echo "Epochs: ${EPOCHS}"
 echo "Batch Size: ${BATCH_SIZE}"
 echo "Results Dir: ${RESULTS_DIR}"

@@ -141,7 +141,6 @@ class Config:
         "deit": 768,
         "swin": 1024,
         "beit": 768,
-        "eva": 768,
         # Self-supervised series
         "mae": 768,
         "mae_large": 1024,
@@ -149,13 +148,10 @@ class Config:
         "dino_large": 1024,
         # CLIP series
         "clip": 768,
-        "clip_large": 768,
-        "openclip": 512,
+        "clip_large": 1024,
+        "openclip": 768,
         # Modern CNN
         "convnext": 1024,
-        # Multimodal models
-        "sam": 768,
-        "albef": 768,
     })
 
     @property

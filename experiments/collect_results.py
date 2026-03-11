@@ -32,42 +32,23 @@ def parse_run_name(run_name: str) -> dict:
         info["dataset"] = parts[0]
 
     # 解析是否为融合
-    if "fusion" in run_name:
-        # 提取融合方法
-        for part in parts:
-            if part.startswith("fusion-"):
-                info["fusion_method"] = part.replace("fusion-", "")
-                break
-
-        # 提取模型列表
-        for i, part in enumerate(parts):
-            if part == "fusion" and i + 1 < len(parts):
-                # 下一个部分可能是模型列表或方法
-                if parts[i + 1].startswith("fusion-"):
-                    # 方法名，继续找模型
-                    for j in range(i + 2, len(parts)):
-                        if not parts[j].startswith("seed"):
-                            info["models"] = parts[j]
-                            break
-                        else:
-                            break
-                else:
-                    info["models"] = parts[i + 1]
-                break
+    if len(parts) >= 4 and parts[1] == "fusion":
+        info["fusion_method"] = parts[2]
+        info["models"] = parts[3]
     else:
         # 单模型
         info["is_single"] = True
         for part in parts:
             if part in ["mae", "clip", "dino", "vit", "swin", "beit", "deit",
-                       "convnext", "eva", "mae_large", "clip_large", "dino_large",
-                       "openclip", "sam", "albef"]:
+                       "convnext", "mae_large", "clip_large", "dino_large",
+                       "openclip"]:
                 info["models"] = part
                 info["num_models"] = 1
                 break
 
     # 计算模型数量
     if not info["is_single"] and info["models"] != "unknown":
-        info["num_models"] = len(info["models"].split(","))
+        info["num_models"] = len([name for name in info["models"].split("-") if name])
 
     return info
 

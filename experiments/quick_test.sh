@@ -8,7 +8,7 @@
 # 只在CIFAR-100上运行少量实验组合
 # ================================================================
 
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -17,6 +17,15 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 source "${SCRIPT_DIR}/config.sh"
 
 cd "$PROJECT_ROOT"
+
+if command -v python >/dev/null 2>&1; then
+    PYTHON_BIN="python"
+elif command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="python3"
+else
+    echo "ERROR: Neither python nor python3 was found in PATH"
+    exit 1
+fi
 
 echo "========================================"
 echo "Quick Test - Fusion Experiments"
@@ -45,7 +54,7 @@ TEST_DATASET="cifar100"
 
 # ========== 测试：单模型 ==========
 echo "[1/5] Testing single model (CLIP) on ${TEST_DATASET}..."
-python main.py \
+"${PYTHON_BIN}" main.py \
     --dataset "${TEST_DATASET}" \
     --model clip \
     --storage_dir "${STORAGE_DIR}" \
@@ -56,7 +65,7 @@ python main.py \
 
 # ========== 测试：2模型 + concat ==========
 echo "[2/5] Testing 2 models with concat on ${TEST_DATASET}..."
-python main.py \
+"${PYTHON_BIN}" main.py \
     --dataset "${TEST_DATASET}" \
     --model fusion \
     --fusion_method concat \
@@ -69,7 +78,7 @@ python main.py \
 
 # ========== 测试：3模型 + weighted_sum ==========
 echo "[3/5] Testing 3 models with weighted_sum on ${TEST_DATASET}..."
-python main.py \
+"${PYTHON_BIN}" main.py \
     --dataset "${TEST_DATASET}" \
     --model fusion \
     --fusion_method weighted_sum \
@@ -82,7 +91,7 @@ python main.py \
 
 # ========== 测试：3模型 + gated ==========
 echo "[4/5] Testing 3 models with gated on ${TEST_DATASET}..."
-python main.py \
+"${PYTHON_BIN}" main.py \
     --dataset "${TEST_DATASET}" \
     --model fusion \
     --fusion_method gated \
@@ -95,7 +104,7 @@ python main.py \
 
 # ========== 测试：3模型 + proj_concat ==========
 echo "[5/5] Testing 3 models with proj_concat on ${TEST_DATASET}..."
-python main.py \
+"${PYTHON_BIN}" main.py \
     --dataset "${TEST_DATASET}" \
     --model fusion \
     --fusion_method proj_concat \
@@ -114,7 +123,7 @@ echo "========================================"
 echo "Results: $TEST_DIR"
 
 # 显示结果摘要
-python "${SCRIPT_DIR}/collect_results.py" \
+"${PYTHON_BIN}" "${SCRIPT_DIR}/collect_results.py" \
     --results_dir "$TEST_DIR" \
     --output "$TEST_DIR/results.csv" \
     2>/dev/null || echo "Results collection skipped (no results yet)"
@@ -128,7 +137,7 @@ echo ""
 echo "Full experiment breakdown:"
 echo "  - 8 CLIP datasets"
 echo "  - 1 single model (CLIP) per dataset"
-echo "  - 10 model counts × 6 fusion methods per dataset"
-echo "  - Total: 488 experiments"
+echo "  - 9 fusion model counts (2-10 models) × 6 fusion methods per dataset"
+echo "  - Total: 440 experiments"
 echo ""
 echo "Estimated time: 40-80 hours (depending on hardware)"

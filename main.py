@@ -40,15 +40,13 @@ def parse_args():
                         choices=[
                             "mae", "clip", "dino", "fusion",
                             # Vision Transformer series
-                            "vit", "deit", "swin", "beit", "eva",
+                            "vit", "deit", "swin", "beit",
                             # Large variants
                             "mae_large", "clip_large", "dino_large",
                             # CLIP series
                             "openclip",
                             # Modern CNN
                             "convnext",
-                            # Multimodal
-                            "sam", "albef",
                         ])
     parser.add_argument("--fusion_method", type=str, default="concat",
                         choices=[
@@ -117,15 +115,13 @@ def parse_fusion_models(fusion_models: str):
     valid_models = {
         "mae", "clip", "dino",
         # Vision Transformer series
-        "vit", "deit", "swin", "beit", "eva",
+        "vit", "deit", "swin", "beit",
         # Large variants
         "mae_large", "clip_large", "dino_large",
         # CLIP series
         "openclip",
         # Modern CNN
         "convnext",
-        # Multimodal
-        "sam", "albef",
     }
     models = [name.strip().lower() for name in fusion_models.split(",") if name.strip()]
 
@@ -143,8 +139,6 @@ def parse_fusion_models(fusion_models: str):
         raise ValueError(f"Invalid model in fusion_models: {unique_models}. Valid: {sorted(valid_models)}")
     if len(unique_models) < 2:
         raise ValueError("Fusion requires at least 2 models.")
-    if len(unique_models) > 3:
-        raise ValueError("At most 3 models are supported.")
 
     return unique_models
 

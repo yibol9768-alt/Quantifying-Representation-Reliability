@@ -54,11 +54,10 @@ declare -A FEATURE_DIMS=(
     ["beit"]=768
     ["deit"]=768
     ["convnext"]=1024
-    ["eva"]=768
     ["mae_large"]=1024
     ["dino_large"]=1024
-    ["clip_large"]=768
-    ["openclip"]=512
+    ["clip_large"]=1024
+    ["openclip"]=768
 )
 
 # 数据集类别数
