@@ -58,15 +58,13 @@ ALL_MODELS=(
     "clip"            # 单模型baseline主力
     "dino"            # 自监督
     "mae"             # 自监督
-    "vit"             # 标准ViT
-    "swin"            # 层级ViT
+    "siglip"          # 图文对齐 (WebLI)
+    "data2vec"        # latent-prediction 自监督
     "beit"            # BEiT
-    "deit"            # DeiT
-    "convnext"        # 现代CNN
-    "mae_large"       # 大模型
-    "dino_large"      # 大模型
-    "clip_large"      # CLIP大模型
     "openclip"        # OpenCLIP
+    "convnext"        # 现代CNN
+    "swin"            # 层级ViT
+    "vit"             # 标准ViT
 )
 
 # ------------------------------------------------

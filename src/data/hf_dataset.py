@@ -1,9 +1,11 @@
 """Dataset utilities - manual download only."""
 
+import random
+from collections import defaultdict
 import torch
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
-from typing import Tuple
+from typing import List, Optional, Tuple
 from pathlib import Path
 
 
@@ -47,9 +49,13 @@ def get_transforms(model_type: str = "mae", train: bool = False, dataset: str = 
     # Get normalization based on model type
     if model_type == "fusion":
         normalize = None
-    elif model_type in ("clip", "clip_large", "openclip"):
+    elif model_type in ("clip", "openclip"):
         mean = (0.48145466, 0.4578275, 0.40821073)
         std = (0.26862954, 0.26130258, 0.27577711)
+        normalize = transforms.Normalize(mean=mean, std=std)
+    elif model_type in ("beit", "data2vec", "siglip"):
+        mean = (0.5, 0.5, 0.5)
+        std = (0.5, 0.5, 0.5)
         normalize = transforms.Normalize(mean=mean, std=std)
     else:
         mean = (0.485, 0.456, 0.406)
@@ -113,7 +119,14 @@ class ImageFolderDataset(Dataset):
             └── class2/
     """
 
-    def __init__(self, root: str, transform=None):
+    def __init__(
+        self,
+        root: str,
+        transform=None,
+        fewshot_min: Optional[int] = None,
+        fewshot_max: Optional[int] = None,
+        seed: int = 42,
+    ):
         self.root = Path(root)
         self.transform = transform
         self.samples = []
@@ -125,6 +138,43 @@ class ImageFolderDataset(Dataset):
             for img_path in class_dir.glob("*"):
                 if img_path.suffix.lower() in [".png", ".jpg", ".jpeg"]:
                     self.samples.append((img_path, self.class_to_idx[class_name]))
+
+        if fewshot_min is not None and fewshot_max is not None:
+            self.samples = self._apply_fewshot(
+                self.samples,
+                fewshot_min=fewshot_min,
+                fewshot_max=fewshot_max,
+                seed=seed,
+            )
+
+    @staticmethod
+    def _apply_fewshot(
+        samples: List[Tuple[Path, int]],
+        *,
+        fewshot_min: int,
+        fewshot_max: int,
+        seed: int,
+    ) -> List[Tuple[Path, int]]:
+        """Keep only a small deterministic subset of train images per class."""
+        if fewshot_min <= 0 or fewshot_max <= 0:
+            raise ValueError("fewshot_min and fewshot_max must be positive integers.")
+        if fewshot_min > fewshot_max:
+            raise ValueError("fewshot_min must be <= fewshot_max.")
+
+        by_class = defaultdict(list)
+        for img_path, label in samples:
+            by_class[label].append((img_path, label))
+
+        selected = []
+        rng = random.Random(seed)
+        for label in sorted(by_class):
+            class_samples = sorted(by_class[label], key=lambda item: str(item[0]))
+            rng.shuffle(class_samples)
+            target_count = rng.randint(fewshot_min, fewshot_max)
+            selected.extend(class_samples[:min(target_count, len(class_samples))])
+
+        selected.sort(key=lambda item: (item[1], str(item[0])))
+        return selected
 
     def __len__(self):
         return len(self.samples)
@@ -143,7 +193,10 @@ def get_dataloaders(
     data_dir: str,
     batch_size: int,
     num_workers: int,
-    model_type: str = "mae"
+    model_type: str = "mae",
+    fewshot_min: Optional[int] = None,
+    fewshot_max: Optional[int] = None,
+    seed: int = 42,
 ) -> Tuple[DataLoader, DataLoader]:
     """Get dataloaders for specified dataset.
 
@@ -153,6 +206,9 @@ def get_dataloaders(
         batch_size: Batch size
         num_workers: Number of workers
         model_type: Model type for transforms
+        fewshot_min: Min train images per class. None disables few-shot.
+        fewshot_max: Max train images per class. None disables few-shot.
+        seed: Sampling seed for deterministic few-shot subsets.
 
     Returns:
         train_loader, test_loader
@@ -178,7 +234,13 @@ def get_dataloaders(
     if not test_path.exists():
         raise FileNotFoundError(f"Test data not found at {test_path}")
 
-    train_set = ImageFolderDataset(str(train_path), transform=train_tf)
+    train_set = ImageFolderDataset(
+        str(train_path),
+        transform=train_tf,
+        fewshot_min=fewshot_min,
+        fewshot_max=fewshot_max,
+        seed=seed,
+    )
     test_set = ImageFolderDataset(str(test_path), transform=test_tf)
 
     train_loader = DataLoader(
@@ -190,6 +252,13 @@ def get_dataloaders(
         num_workers=num_workers, pin_memory=True
     )
 
-    print(f"Loaded {dataset}: {len(train_set)} train, {len(test_set)} test, {len(train_set.classes)} classes")
+    if fewshot_min is not None and fewshot_max is not None:
+        print(
+            f"Loaded {dataset}: {len(train_set)} few-shot train "
+            f"({fewshot_min}-{fewshot_max} per class), {len(test_set)} test, "
+            f"{len(train_set.classes)} classes"
+        )
+    else:
+        print(f"Loaded {dataset}: {len(train_set)} train, {len(test_set)} test, {len(train_set.classes)} classes")
 
     return train_loader, test_loader

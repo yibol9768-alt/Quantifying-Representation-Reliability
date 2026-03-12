@@ -2,6 +2,8 @@
 
 本目录包含系统化评估多模型融合效果的实验脚本。
 
+默认实验使用 few-shot 训练集：每个类别固定使用 10 张训练图像；测试集保持完整。
+
 ## 实验设计
 
 ### 目标
@@ -30,13 +32,13 @@
 | 1 | CLIP | 最强单模型baseline |
 | 2 | CLIP + DINO | 两种不同范式 |
 | 3 | MAE + CLIP + DINO | 经典三件套 |
-| 4 | + ViT | 加入标准ViT |
-| 5 | + Swin | 加入层级Transformer |
-| 6 | + ConvNeXt | 加入现代CNN |
-| 7 | + DeiT | 加入Data-efficient ViT |
-| 8 | + BEiT | 加入Bootstrapped ImageText |
-| 9 | + OpenCLIP | 加入 LAION OpenCLIP |
-| 10 | + MAE_Large | 加入大模型 |
+| 4 | + SigLIP | 加入第二种图文对齐 |
+| 5 | + Data2Vec | 加入 latent-prediction 自监督 |
+| 6 | + BEiT | 加入 masked image modeling |
+| 7 | + OpenCLIP | 加入 LAION OpenCLIP |
+| 8 | + ConvNeXt | 加入监督 CNN |
+| 9 | + Swin | 加入层级 Transformer |
+| 10 | + ViT | 加入标准监督 ViT |
 
 ### 融合方法（6个简单Baseline）
 

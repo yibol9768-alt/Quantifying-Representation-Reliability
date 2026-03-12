@@ -36,8 +36,8 @@ export CLIP_DATASETS=(
 # ------------------------------------------------
 # 模型组合设计
 # ------------------------------------------------
-# 原则：从当前 12 个可稳定下载和加载的模型中选取代表性组合
-# - 覆盖不同预训练范式（自监督、监督、对比学习）
+# 原则：从当前 10 个差异更大的模型中选取代表性组合
+# - 覆盖不同预训练范式（自监督、监督、图文对齐）
 # - 覆盖不同架构（ViT、Swin、CNN）
 # - 逐步增加模型数量，观察融合效果变化
 
@@ -50,26 +50,26 @@ export MODELS_2="clip,dino"
 # 3个模型 - 经典三件套
 export MODELS_3="mae,clip,dino"
 
-# 4个模型 - 加入标准ViT
-export MODELS_4="mae,clip,dino,vit"
+# 4个模型 - 加入第二种图文预训练
+export MODELS_4="mae,clip,dino,siglip"
 
-# 5个模型 - 加入层级Transformer
-export MODELS_5="mae,clip,dino,vit,swin"
+# 5个模型 - 加入另一种自监督目标
+export MODELS_5="mae,clip,dino,siglip,data2vec"
 
-# 6个模型 - 加入现代CNN
-export MODELS_6="mae,clip,dino,vit,swin,convnext"
+# 6个模型 - 加入 token-level masked modeling
+export MODELS_6="mae,clip,dino,siglip,data2vec,beit"
 
-# 7个模型 - 加入Data-efficient ViT
-export MODELS_7="mae,clip,dino,vit,swin,convnext,deit"
+# 7个模型 - 加入 OpenCLIP
+export MODELS_7="mae,clip,dino,siglip,data2vec,beit,openclip"
 
-# 8个模型 - 加入Bootstrapped ImageText
-export MODELS_8="mae,clip,dino,vit,swin,convnext,deit,beit"
+# 8个模型 - 加入监督 CNN
+export MODELS_8="mae,clip,dino,siglip,data2vec,beit,openclip,convnext"
 
-# 9个模型 - 加入 OpenCLIP
-export MODELS_9="mae,clip,dino,vit,swin,convnext,deit,beit,openclip"
+# 9个模型 - 加入层级 Transformer
+export MODELS_9="mae,clip,dino,siglip,data2vec,beit,openclip,convnext,swin"
 
-# 10个模型 - 加入大模型
-export MODELS_10="mae,clip,dino,vit,swin,convnext,deit,beit,openclip,mae_large"
+# 10个模型 - 加入标准监督 ViT
+export MODELS_10="mae,clip,dino,siglip,data2vec,beit,openclip,convnext,swin,vit"
 
 # ------------------------------------------------
 # 融合方法列表（只使用简单baseline方法）

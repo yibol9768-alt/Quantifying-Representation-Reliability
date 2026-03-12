@@ -1,6 +1,6 @@
 # Feature Classification with Pretrained Vision Models
 
-使用 HuggingFace Transformers 的预训练模型提取特征，配合 MLP 分类器。当前默认支持 12 个可稳定下载且与当前加载器实现一致的预训练视觉模型，以及 19 个数据集。
+使用 HuggingFace Transformers 的预训练模型提取特征，配合 MLP 分类器。当前默认支持 10 个训练信号差异更大的预训练视觉模型，以及 19 个数据集。默认训练模式为 few-shot：每个类别固定使用 10 张训练图像。
 
 ## 国内环境推荐流程
 
@@ -73,7 +73,7 @@ python -m pip install -U huggingface_hub
 hf --help
 ```
 
-如果你想下载所有当前支持的 12 个模型和所有支持的数据集：
+如果你想下载所有当前支持的 10 个模型和所有支持的数据集：
 
 ```bash
 # 下载所有模型
@@ -117,13 +117,11 @@ $STORAGE_DIR/models/
 ├── vit-mae-base/           # MAE
 ├── clip-vit-base-patch16/  # CLIP
 ├── dinov2-base/            # DINOv2-Base
+├── siglip-base-patch16-224/ # SigLIP
+├── data2vec-vision-base/   # Data2Vec-Vision
 ├── vit-base-patch16/       # ViT
-├── deit-base/              # DeiT
 ├── swin-base/              # Swin
 ├── beit-base/              # BEiT
-├── vit-mae-large/          # MAE-Large
-├── clip-vit-large/         # CLIP-Large
-├── dinov2-large/           # DINOv2-Large
 ├── openclip-vit-b32/       # OpenCLIP
 └── convnext-base/          # ConvNeXt
 
@@ -143,6 +141,15 @@ python main.py --dataset cifar100 --model clip \
     --epochs 10 --batch_size 128 --cache_dtype fp32
 ```
 
+如果你想关闭默认的 few-shot，改用完整训练集：
+
+```bash
+python main.py --dataset cifar100 --model clip \
+    --storage_dir "$STORAGE_DIR" \
+    --disable_fewshot \
+    --epochs 10 --batch_size 128 --cache_dtype fp32
+```
+
 ## 模型说明
 
 ### Vision Transformer 系列
@@ -150,26 +157,24 @@ python main.py --dataset cifar100 --model clip \
 | 模型 | 参数 | 特征维度 | 本地路径 | 说明 |
 |------|------|----------|----------|------|
 | ViT | `--model vit` | 768 | `<storage_dir>/models/vit-base-patch16` | Google标准ViT |
-| DeiT | `--model deit` | 768 | `<storage_dir>/models/deit-base` | Facebook Data-efficient ViT |
 | Swin | `--model swin` | 1024 | `<storage_dir>/models/swin-base` | Microsoft层级ViT |
 | BEiT | `--model beit` | 768 | `<storage_dir>/models/beit-base` | Microsoft Bootstrapped ImageText |
+| Data2Vec-Vision | `--model data2vec` | 768 | `<storage_dir>/models/data2vec-vision-base` | Facebook latent-prediction 自监督 |
 
 ### 自监督系列
 
 | 模型 | 参数 | 特征维度 | 本地路径 | 说明 |
 |------|------|----------|----------|------|
 | MAE | `--model mae` | 768 | `<storage_dir>/models/vit-mae-base` | Facebook MAE Base |
-| MAE-Large | `--model mae_large` | 1024 | `<storage_dir>/models/vit-mae-large` | Facebook MAE Large |
 | DINO | `--model dino` | 768 | `<storage_dir>/models/dinov2-base` | Facebook DINOv2 Base |
-| DINOv2-Large | `--model dino_large` | 1024 | `<storage_dir>/models/dinov2-large` | Facebook DINOv2 Large |
 
-### CLIP 系列
+### 图文对齐系列
 
 | 模型 | 参数 | 特征维度 | 本地路径 | 说明 |
 |------|------|----------|----------|------|
 | CLIP | `--model clip` | 768 | `<storage_dir>/models/clip-vit-base-patch16` | OpenAI CLIP ViT-B/16 |
-| CLIP-Large | `--model clip_large` | 1024 | `<storage_dir>/models/clip-vit-large` | OpenAI CLIP ViT-L/14 |
 | OpenCLIP | `--model openclip` | 768 | `<storage_dir>/models/openclip-vit-b32` | LAION CLIP ViT-B/32 (`laion2B-s34B-b79K`) |
+| SigLIP | `--model siglip` | 768 | `<storage_dir>/models/siglip-base-patch16-224` | Google SigLIP，WebLI 图文对齐 |
 
 ### 现代 CNN
 
@@ -178,6 +183,7 @@ python main.py --dataset cifar100 --model clip \
 | ConvNeXt | `--model convnext` | 1024 | `<storage_dir>/models/convnext-base` | Facebook ConvNeXt Base 224 |
 
 说明：
+- 默认模型池里移除了 `deit` 和 `*_large` 这类与现有模型在结构或预训练范式上高度重叠的变体，优先保留训练目标和数据来源差异更大的模型。
 - 旧版本 README 里的 `EVA`、`SAM`、`ALBEF` 已从默认支持列表移除。
 - 原因分别是：仓库/权重入口在 2026 年已经不稳定，或与当前分类特征提取器的 `transformers` 加载类并不匹配，容易出现“能下载但不能正确加载/提特征”的问题。
 
@@ -338,11 +344,12 @@ python main.py --dataset svhn --model dino \
 
 ### 多模型融合
 
-支持从当前 12 个可验证模型中任意选择 2 个及以上进行融合。
+支持从当前 10 个可验证模型中任意选择 2 个及以上进行融合。
 
 建议：
 - `concat`、`proj_concat`、`weighted_sum`、`gated`、`difference_concat`、`hadamard_concat` 适合 2-10 个模型的横向实验。
 - `comm`、`mmvit` 更适合 2-3 个以 ViT/CLIP/DINO 为主的 token 型 backbone。
+- 默认所有训练都会使用 few-shot 训练集，每类固定 10-shot；具体采样由 `--seed` 控制。
 
 ```bash
 # 两模型融合
@@ -359,7 +366,7 @@ python main.py --dataset cifar100 --model fusion \
 
 # 新模型融合
 python main.py --dataset cifar100 --model fusion \
-    --fusion_method mmvit --fusion_models swin,dino_large \
+    --fusion_method mmvit --fusion_models swin,dino \
     --storage_dir "$STORAGE_DIR" \
     --epochs 10 --batch_size 128 --cache_dtype fp32
 ```
@@ -541,30 +548,26 @@ export HF_ENDPOINT=https://hf-mirror.com
 # Vision Transformer 系列
 hf download google/vit-base-patch16-224 \
     --local-dir "$STORAGE_DIR/models/vit-base-patch16"
-hf download facebook/deit-base-patch16-224 \
-    --local-dir "$STORAGE_DIR/models/deit-base"
 hf download microsoft/swin-base-patch4-window7-224 \
     --local-dir "$STORAGE_DIR/models/swin-base"
 hf download microsoft/beit-base-patch16-224-pt22k \
     --local-dir "$STORAGE_DIR/models/beit-base"
+hf download facebook/data2vec-vision-base \
+    --local-dir "$STORAGE_DIR/models/data2vec-vision-base"
 
 # 自监督系列
 hf download facebook/vit-mae-base \
     --local-dir "$STORAGE_DIR/models/vit-mae-base"
-hf download facebook/vit-mae-large \
-    --local-dir "$STORAGE_DIR/models/vit-mae-large"
 hf download facebook/dinov2-base \
     --local-dir "$STORAGE_DIR/models/dinov2-base"
-hf download facebook/dinov2-large \
-    --local-dir "$STORAGE_DIR/models/dinov2-large"
 
-# CLIP 系列
+# 图文对齐系列
 hf download openai/clip-vit-base-patch16 \
     --local-dir "$STORAGE_DIR/models/clip-vit-base-patch16"
-hf download openai/clip-vit-large-patch14 \
-    --local-dir "$STORAGE_DIR/models/clip-vit-large"
 hf download laion/CLIP-ViT-B-32-laion2B-s34B-b79K \
     --local-dir "$STORAGE_DIR/models/openclip-vit-b32"
+hf download google/siglip-base-patch16-224 \
+    --local-dir "$STORAGE_DIR/models/siglip-base-patch16-224"
 
 # 现代 CNN
 hf download facebook/convnext-base-224 \
@@ -599,7 +602,7 @@ project/
 
 ```text
 <storage_dir>/
-├── models/          # 12个默认支持的预训练模型
+├── models/          # 10个默认支持的预训练模型
 │   ├── vit-mae-base/
 │   ├── clip-vit-base-patch16/
 │   ├── dinov2-base/

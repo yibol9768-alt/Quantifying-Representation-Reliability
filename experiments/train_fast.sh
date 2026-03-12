@@ -49,15 +49,13 @@ declare -A FEATURE_DIMS=(
     ["clip"]=768
     ["dino"]=768
     ["mae"]=768
-    ["vit"]=768
-    ["swin"]=1024
-    ["beit"]=768
-    ["deit"]=768
-    ["convnext"]=1024
-    ["mae_large"]=1024
-    ["dino_large"]=1024
-    ["clip_large"]=1024
+    ["siglip"]=768
+    ["data2vec"]=768
     ["openclip"]=768
+    ["convnext"]=1024
+    ["swin"]=1024
+    ["vit"]=768
+    ["beit"]=768
 )
 
 # 数据集类别数

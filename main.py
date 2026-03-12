@@ -40,11 +40,9 @@ def parse_args():
                         choices=[
                             "mae", "clip", "dino", "fusion",
                             # Vision Transformer series
-                            "vit", "deit", "swin", "beit",
-                            # Large variants
-                            "mae_large", "clip_large", "dino_large",
+                            "vit", "swin", "beit", "data2vec",
                             # CLIP series
-                            "openclip",
+                            "openclip", "siglip",
                             # Modern CNN
                             "convnext",
                         ])
@@ -89,6 +87,12 @@ def parse_args():
     parser.add_argument("--data_dir", type=str, default=DEFAULT_DATA_DIR)
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--fewshot_min", type=int, default=10,
+                        help="Default few-shot lower bound of train images per class")
+    parser.add_argument("--fewshot_max", type=int, default=10,
+                        help="Default few-shot upper bound of train images per class")
+    parser.add_argument("--disable_fewshot", action="store_true",
+                        help="Use the full training set instead of the default few-shot subset")
     parser.add_argument("--no_precompute", action="store_true",
                         help="Optional fallback: disable offline cache and train from raw images")
     parser.add_argument("--cache_dir", type=str, default=DEFAULT_CACHE_DIR,
@@ -115,11 +119,9 @@ def parse_fusion_models(fusion_models: str):
     valid_models = {
         "mae", "clip", "dino",
         # Vision Transformer series
-        "vit", "deit", "swin", "beit",
-        # Large variants
-        "mae_large", "clip_large", "dino_large",
+        "vit", "swin", "beit", "data2vec",
         # CLIP series
-        "openclip",
+        "openclip", "siglip",
         # Modern CNN
         "convnext",
     }
@@ -145,15 +147,16 @@ def parse_fusion_models(fusion_models: str):
 
 def get_checkpoint_name(args) -> str:
     """Build checkpoint name."""
+    data_tag = get_data_regime_tag(args)
     if args.model == "fusion":
         model_tag = "-".join(args.fusion_model_list)
         if use_fusion_harmonization(args):
             return (
-                f"{args.dataset}_fusion-{args.fusion_method}_{model_tag}"
+                f"{args.dataset}_{data_tag}_fusion-{args.fusion_method}_{model_tag}"
                 f"_dim{args.fusion_output_dim}_best.pth"
             )
-        return f"{args.dataset}_fusion-{args.fusion_method}_{model_tag}_best.pth"
-    return f"{args.dataset}_{args.model}_best.pth"
+        return f"{args.dataset}_{data_tag}_fusion-{args.fusion_method}_{model_tag}_best.pth"
+    return f"{args.dataset}_{data_tag}_{args.model}_best.pth"
 
 
 def get_fusion_kwargs(args, num_classes: int = 100) -> dict:
@@ -228,15 +231,27 @@ def get_cache_storage_dtype(args) -> torch.dtype:
     return torch.float16 if args.cache_dtype == "fp16" else torch.float32
 
 
+def use_fewshot(args) -> bool:
+    """Whether training should use the default few-shot regime."""
+    return not args.disable_fewshot
+
+
+def get_data_regime_tag(args) -> str:
+    """Build a short tag describing the train subset regime."""
+    if use_fewshot(args):
+        return f"fs{args.fewshot_min}to{args.fewshot_max}"
+    return "fulltrain"
+
+
 def get_cache_name(args) -> str:
     """Build a cache directory name for the current experiment."""
     if args.model == "fusion":
         model_tag = "-".join(args.fusion_model_list)
-        parts = [args.dataset, "fusion", args.fusion_method, model_tag]
+        parts = [args.dataset, get_data_regime_tag(args), "fusion", args.fusion_method, model_tag]
         if use_fusion_harmonization(args):
             parts.append(f"dim{args.fusion_output_dim}")
     else:
-        parts = [args.dataset, args.model]
+        parts = [args.dataset, get_data_regime_tag(args), args.model]
 
     parts.append(f"seed{args.seed}")
     parts.append(f"cache{args.cache_dtype}")
@@ -253,11 +268,11 @@ def get_run_basename(args) -> str:
     """Build a stable experiment basename before timestamping."""
     if args.model == "fusion":
         model_tag = "-".join(args.fusion_model_list)
-        parts = [args.dataset, "fusion", args.fusion_method, model_tag]
+        parts = [args.dataset, get_data_regime_tag(args), "fusion", args.fusion_method, model_tag]
         if use_fusion_harmonization(args):
             parts.append(f"dim{args.fusion_output_dim}")
     else:
-        parts = [args.dataset, args.model]
+        parts = [args.dataset, get_data_regime_tag(args), args.model]
 
     parts.append(f"seed{args.seed}")
     parts.append("offline-cache" if not args.no_precompute else "online")
@@ -410,7 +425,14 @@ def build_cached_loaders(args, extractor, device, use_fp16):
 
     print(f"\nLoading dataset {args.dataset}...")
     image_train_loader, image_test_loader = get_dataloaders(
-        args.dataset, args.data_dir, args.batch_size, args.num_workers, args.loader_model_type
+        args.dataset,
+        args.data_dir,
+        args.batch_size,
+        args.num_workers,
+        args.loader_model_type,
+        fewshot_min=args.fewshot_min if use_fewshot(args) else None,
+        fewshot_max=args.fewshot_max if use_fewshot(args) else None,
+        seed=args.seed,
     )
 
     storage_dtype = get_cache_storage_dtype(args)
@@ -670,7 +692,14 @@ def train_online(args, config):
     # Load data
     print(f"\nLoading dataset {args.dataset}...")
     train_loader, test_loader = get_dataloaders(
-        args.dataset, args.data_dir, args.batch_size, args.num_workers, args.loader_model_type
+        args.dataset,
+        args.data_dir,
+        args.batch_size,
+        args.num_workers,
+        args.loader_model_type,
+        fewshot_min=args.fewshot_min if use_fewshot(args) else None,
+        fewshot_max=args.fewshot_max if use_fewshot(args) else None,
+        seed=args.seed,
     )
 
     # Feature extractor
@@ -845,6 +874,10 @@ def train_online(args, config):
 
 def main():
     args = parse_args()
+    if args.fewshot_min <= 0 or args.fewshot_max <= 0:
+        raise ValueError("fewshot_min and fewshot_max must be positive integers.")
+    if args.fewshot_min > args.fewshot_max:
+        raise ValueError("fewshot_min must be <= fewshot_max.")
     set_random_seed(args.seed)
     resolve_storage_paths(args)
 
@@ -884,6 +917,9 @@ def main():
             print(f"Unified fusion output dim: {args.fusion_output_dim}")
         print(f"Fusion trainable: {is_trainable_fusion(args)}")
     print(f"Seed: {args.seed}")
+    print(f"Few-shot mode: {use_fewshot(args)}")
+    if use_fewshot(args):
+        print(f"Few-shot train images per class: {args.fewshot_min}-{args.fewshot_max}")
     print(f"Offline cache mode: {not args.no_precompute}")
     print(f"Mixed precision (fp16): {args.fp16}")
     print(f"Storage dir: {args.storage_dir if args.storage_dir is not None else '(repo defaults)'}")

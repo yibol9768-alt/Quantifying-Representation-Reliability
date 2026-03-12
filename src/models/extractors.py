@@ -13,12 +13,13 @@ import torch.nn.functional as F
 from transformers import (
     AutoImageProcessor,
     CLIPVisionModel,
+    Data2VecVisionModel,
     Dinov2Model,
+    SiglipVisionModel,
     ViTMAEModel,
     ViTModel,
     SwinModel,
     BeitModel,
-    DeiTModel,
     ConvNextModel,
 )
 
@@ -115,11 +116,6 @@ class FeatureExtractor(nn.Module):
             "hf_name": "google/vit-base-patch16-224",
             "dim": 768,
         },
-        "deit": {
-            "path": "deit-base",
-            "hf_name": "facebook/deit-base-patch16-224",
-            "dim": 768,
-        },
         "swin": {
             "path": "swin-base",
             "hf_name": "microsoft/swin-base-patch4-window7-224",
@@ -130,26 +126,21 @@ class FeatureExtractor(nn.Module):
             "hf_name": "microsoft/beit-base-patch16-224-pt22k",
             "dim": 768,
         },
+        "data2vec": {
+            "path": "data2vec-vision-base",
+            "hf_name": "facebook/data2vec-vision-base",
+            "dim": 768,
+        },
         # Self-supervised series
         "mae": {
             "path": "vit-mae-base",
             "hf_name": "facebook/vit-mae-base",
             "dim": 768,
         },
-        "mae_large": {
-            "path": "vit-mae-large",
-            "hf_name": "facebook/vit-mae-large",
-            "dim": 1024,
-        },
         "dino": {
             "path": "dinov2-base",
             "hf_name": "facebook/dinov2-base",
             "dim": 768,
-        },
-        "dino_large": {
-            "path": "dinov2-large",
-            "hf_name": "facebook/dinov2-large",
-            "dim": 1024,
         },
         # CLIP series
         "clip": {
@@ -157,14 +148,14 @@ class FeatureExtractor(nn.Module):
             "hf_name": "openai/clip-vit-base-patch16",
             "dim": 768,
         },
-        "clip_large": {
-            "path": "clip-vit-large",
-            "hf_name": "openai/clip-vit-large-patch14",
-            "dim": 1024,
-        },
         "openclip": {
             "path": "openclip-vit-b32",
             "hf_name": "laion/CLIP-ViT-B-32-laion2B-s34B-b79K",
+            "dim": 768,
+        },
+        "siglip": {
+            "path": "siglip-base-patch16-224",
+            "hf_name": "google/siglip-base-patch16-224",
             "dim": 768,
         },
         # Modern CNN
@@ -201,17 +192,13 @@ class FeatureExtractor(nn.Module):
         # Load model based on type
         if model_type == "mae":
             self.model = ViTMAEModel.from_pretrained(str(model_path), local_files_only=True)
-        elif model_type == "mae_large":
-            self.model = ViTMAEModel.from_pretrained(str(model_path), local_files_only=True)
         elif model_type == "clip":
-            self.model = CLIPVisionModel.from_pretrained(str(model_path), local_files_only=True)
-        elif model_type == "clip_large":
             self.model = CLIPVisionModel.from_pretrained(str(model_path), local_files_only=True)
         elif model_type == "openclip":
             self.model = CLIPVisionModel.from_pretrained(str(model_path), local_files_only=True)
+        elif model_type == "siglip":
+            self.model = SiglipVisionModel.from_pretrained(str(model_path), local_files_only=True)
         elif model_type == "dino":
-            self.model = Dinov2Model.from_pretrained(str(model_path), local_files_only=True)
-        elif model_type == "dino_large":
             self.model = Dinov2Model.from_pretrained(str(model_path), local_files_only=True)
         elif model_type == "vit":
             self.model = ViTModel.from_pretrained(str(model_path), local_files_only=True)
@@ -219,8 +206,8 @@ class FeatureExtractor(nn.Module):
             self.model = SwinModel.from_pretrained(str(model_path), local_files_only=True)
         elif model_type == "beit":
             self.model = BeitModel.from_pretrained(str(model_path), local_files_only=True)
-        elif model_type == "deit":
-            self.model = DeiTModel.from_pretrained(str(model_path), local_files_only=True)
+        elif model_type == "data2vec":
+            self.model = Data2VecVisionModel.from_pretrained(str(model_path), local_files_only=True)
         elif model_type == "convnext":
             self.model = ConvNextModel.from_pretrained(str(model_path), local_files_only=True)
         else:

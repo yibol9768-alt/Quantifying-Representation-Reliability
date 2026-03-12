@@ -32,16 +32,17 @@ def parse_run_name(run_name: str) -> dict:
         info["dataset"] = parts[0]
 
     # 解析是否为融合
-    if len(parts) >= 4 and parts[1] == "fusion":
-        info["fusion_method"] = parts[2]
-        info["models"] = parts[3]
+    if "fusion" in parts:
+        fusion_idx = parts.index("fusion")
+        if fusion_idx + 2 < len(parts):
+            info["fusion_method"] = parts[fusion_idx + 1]
+            info["models"] = parts[fusion_idx + 2]
     else:
         # 单模型
         info["is_single"] = True
         for part in parts:
-            if part in ["mae", "clip", "dino", "vit", "swin", "beit", "deit",
-                       "convnext", "mae_large", "clip_large", "dino_large",
-                       "openclip"]:
+            if part in ["mae", "clip", "dino", "vit", "swin", "beit",
+                       "data2vec", "siglip", "convnext", "openclip"]:
                 info["models"] = part
                 info["num_models"] = 1
                 break

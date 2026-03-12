@@ -138,18 +138,16 @@ class Config:
     FEATURE_DIMS: Dict = field(default_factory=lambda: {
         # Vision Transformer series
         "vit": 768,
-        "deit": 768,
         "swin": 1024,
         "beit": 768,
+        "data2vec": 768,
         # Self-supervised series
         "mae": 768,
-        "mae_large": 1024,
         "dino": 768,
-        "dino_large": 1024,
         # CLIP series
         "clip": 768,
-        "clip_large": 1024,
         "openclip": 768,
+        "siglip": 768,
         # Modern CNN
         "convnext": 1024,
     })

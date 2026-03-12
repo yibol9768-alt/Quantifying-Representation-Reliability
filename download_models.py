@@ -63,15 +63,12 @@ def download_all_models(storage_dir: str = DEFAULT_STORAGE_DIR):
         "facebook/dinov2-base": str(paths["models"] / "dinov2-base"),
         # Vision Transformer series
         "google/vit-base-patch16-224": str(paths["models"] / "vit-base-patch16"),
-        "facebook/deit-base-patch16-224": str(paths["models"] / "deit-base"),
         "microsoft/swin-base-patch4-window7-224": str(paths["models"] / "swin-base"),
         "microsoft/beit-base-patch16-224-pt22k": str(paths["models"] / "beit-base"),
-        # Large variants
-        "facebook/vit-mae-large": str(paths["models"] / "vit-mae-large"),
-        "openai/clip-vit-large-patch14": str(paths["models"] / "clip-vit-large"),
-        "facebook/dinov2-large": str(paths["models"] / "dinov2-large"),
+        "facebook/data2vec-vision-base": str(paths["models"] / "data2vec-vision-base"),
         # CLIP series
         "laion/CLIP-ViT-B-32-laion2B-s34B-b79K": str(paths["models"] / "openclip-vit-b32"),
+        "google/siglip-base-patch16-224": str(paths["models"] / "siglip-base-patch16-224"),
         # Modern CNN
         "facebook/convnext-base-224": str(paths["models"] / "convnext-base"),
     }
