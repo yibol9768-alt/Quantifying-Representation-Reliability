@@ -489,11 +489,10 @@ python main.py --dataset cifar100 --model fusion \
     --attention_router_heads 4 --storage_dir "$STORAGE_DIR" \
     --epochs 10 --batch_size 128 --cache_dtype fp32
 
-# 把所有 10 个模型都喂进去，让路由器自己选
+# 调整 router_k 和 aux_weight
 python main.py --dataset cifar100 --model fusion \
-    --fusion_method topk_router \
-    --fusion_models clip,dino,mae,siglip,convnext,data2vec,vit,swin,beit,openclip \
-    --router_k 3 --storage_dir "$STORAGE_DIR" \
+    --fusion_method topk_router --fusion_models clip,dino,mae,siglip,convnext,data2vec \
+    --router_k 3 --router_aux_weight 0.02 --storage_dir "$STORAGE_DIR" \
     --epochs 10 --batch_size 128 --cache_dtype fp32
 ```
 
