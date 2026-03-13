@@ -471,28 +471,28 @@ python main.py --dataset cifar100 --model fusion \
 ### 动态路由示例
 
 ```bash
-# Top-K Router：自动从 4 个模型中为每个样本选 2 个最合适的
+# Top-K Router：自动从 6 个默认模型中为每个样本选 2 个最合适的
 python main.py --dataset cifar100 --model fusion \
-    --fusion_method topk_router --fusion_models clip,dino,mae,siglip \
+    --fusion_method topk_router --fusion_models clip,dino,mae,siglip,convnext,data2vec \
     --router_k 2 --storage_dir "$STORAGE_DIR" \
     --epochs 10 --batch_size 128 --cache_dtype fp32
 
 # Soft MoE Router：所有模型参与，自适应权重
 python main.py --dataset cifar100 --model fusion \
-    --fusion_method moe_router --fusion_models clip,dino,mae,siglip \
+    --fusion_method moe_router --fusion_models clip,dino,mae,siglip,convnext,data2vec \
     --storage_dir "$STORAGE_DIR" \
     --epochs 10 --batch_size 128 --cache_dtype fp32
 
 # Attention Router：模型间自注意力交互
 python main.py --dataset cifar100 --model fusion \
-    --fusion_method attention_router --fusion_models clip,dino,mae,siglip \
+    --fusion_method attention_router --fusion_models clip,dino,mae,siglip,convnext,data2vec \
     --attention_router_heads 4 --storage_dir "$STORAGE_DIR" \
     --epochs 10 --batch_size 128 --cache_dtype fp32
 
 # 把所有 10 个模型都喂进去，让路由器自己选
 python main.py --dataset cifar100 --model fusion \
     --fusion_method topk_router \
-    --fusion_models clip,dino,mae,siglip,vit,swin,beit,data2vec,openclip,convnext \
+    --fusion_models clip,dino,mae,siglip,convnext,data2vec,vit,swin,beit,openclip \
     --router_k 3 --storage_dir "$STORAGE_DIR" \
     --epochs 10 --batch_size 128 --cache_dtype fp32
 ```
@@ -521,7 +521,7 @@ done
 for method in topk_router moe_router attention_router; do
     python main.py --dataset cifar100 --model fusion \
         --storage_dir "$STORAGE_DIR" \
-        --fusion_method $method --fusion_models clip,dino,mae,siglip \
+        --fusion_method $method --fusion_models clip,dino,mae,siglip,convnext,data2vec \
         --seed 42 --epochs 10 --batch_size 128 --cache_dtype fp32
 done
 ```
