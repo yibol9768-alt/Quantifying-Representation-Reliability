@@ -812,44 +812,52 @@ ls "$STORAGE_DIR/data"
 
 ---
 
-## 动态路由实验规划
+## 动态路由实验结果
 
-上述结果表明，固定模型组合无法适配所有数据集。动态路由方法的目标是**让网络自己学习每个样本的最优模型子集**。
+上述结果表明，固定模型组合无法适配所有数据集。我们实现了 3 种动态路由方法，让网络自己学习每个样本的最优模型子集。
 
-### 实验设计
+### Round 1：路由方法有效性验证
 
-#### 第一轮：验证路由方法有效性
+**实验配置**：6 模型 (CLIP+DINO+MAE+SigLIP+ConvNeXt+Data2Vec), 10-shot few-shot, 10 epochs, router_k=2
 
-在所有 7 个已有结果的数据集上，使用 6 个默认模型，对比 3 种路由方法与 Gated baseline：
+> **注意**：本轮实验与上方"模型数量递增"实验的训练配置不同（epoch 数等），数值不可直接对比。本轮重点是**同一配置下不同路由方法之间的横向比较**。
+
+![Round 1 Bar Chart](assets/routing_round1_bar.png)
+
+![Round 1 Summary](assets/routing_round1_summary.png)
+
+| 数据集 | Gated | Top-K Router | MoE Router | Attention Router | 最佳方法 |
+|--------|-------|-------------|------------|------------------|----------|
+| SVHN | **28.93%** | N/A | 21.17% | 21.91% | Gated |
+| EuroSAT | **82.44%** | 73.61% | 82.35% | 78.85% | Gated |
+| STL10 | 93.17% | 91.91% | **94.75%** | 92.85% | MoE Router |
+| Pets | 94.47% | 94.47% | **94.63%** | 94.19% | MoE Router |
+| DTD | 73.09% | 69.15% | **73.67%** | 70.43% | MoE Router |
+| GTSRB | 46.93% | 52.49% | **58.72%** | 46.49% | MoE Router |
+| Country211 | 8.72% | 11.63% | 11.52% | **12.34%** | Attention Router |
+
+#### 方法获胜统计
+
+| 方法 | 获胜次数 | 擅长场景 |
+|------|---------|---------|
+| MoE Router | **4/7** | 中等-高难度分类 (STL10, Pets, DTD, GTSRB) |
+| Gated | 2/7 | 低类别数简单任务 (SVHN, EuroSAT) |
+| Attention Router | 1/7 | 高类别数困难任务 (Country211, 211类) |
+| Top-K Router | 0/7 | k=2 过于激进，需消融实验 |
+
+#### Round 1 关键发现
+
+1. **MoE Router 整体最佳**：soft routing + load-balancing + entropy 正则的组合最稳定，在 4/7 数据集上胜出
+2. **GTSRB 提升最显著**：MoE Router (58.72%) 比 Gated (46.93%) 高出 **+11.79pp**，交通标志识别从自适应路由获益最大
+3. **Gated 在简单任务上仍有优势**：SVHN、EuroSAT (10类) 上简单门控足够，复杂路由反而引入噪声
+4. **Attention Router 适合高类别数**：Country211 (211类) 上唯一超越其他方法，模型间交互建模对细粒度分类有帮助
+5. **Top-K Router 需改进**：k=2 的稀疏选择过于激进，后续需消融 k 值
+
+### 后续实验计划
+
+#### Round 2：Top-K Router k 值消融
 
 ```bash
-# 对每个数据集 × 每种路由方法
-for dataset in svhn eurosat stl10 pets dtd gtsrb country211; do
-    for method in gated topk_router moe_router attention_router; do
-        python main.py --dataset $dataset --model fusion \
-            --fusion_method $method \
-            --fusion_models clip,dino,mae,siglip,convnext,data2vec \
-            --router_k 2 --storage_dir "$STORAGE_DIR" \
-            --seed 42 --epochs 10 --batch_size 128 --cache_dtype fp32
-    done
-done
-```
-
-**预期产出表格**：
-
-| 数据集 | Gated (6模型) | Top-K Router (k=2) | MoE Router | Attention Router |
-|--------|-------------|-------------------|------------|-----------------|
-| STL10 | 94.99% | ? | ? | ? |
-| Pets | 95.45% | ? | ? | ? |
-| EuroSAT | 87.65% | ? | ? | ? |
-| ... | ... | ... | ... | ... |
-
-**核心问题**：路由方法能否在使用全部 6 个模型的情况下，达到或超过手动选择最优子集（4-5模型）的效果？
-
-#### 第二轮：Top-K Router 的 k 值消融
-
-```bash
-# 在表现差异最大的数据集上（如 SVHN、GTSRB）消融 k 值
 for dataset in svhn gtsrb stl10; do
     for k in 1 2 3 4 5; do
         python main.py --dataset $dataset --model fusion \
@@ -861,11 +869,8 @@ for dataset in svhn gtsrb stl10; do
 done
 ```
 
-**预期产出**：k 值 vs 准确率曲线，验证路由器是否能自动发现最优模型数。
+#### Round 3：路由决策可视化
 
-#### 第三轮：路由决策可视化分析
-
-训练完 Top-K Router 后，分析路由器的选择偏好：
 - 每个数据集中各模型被选择的频率分布
 - 不同类别的样本是否偏好不同的模型组合
 - 路由决策与样本难度的关系
