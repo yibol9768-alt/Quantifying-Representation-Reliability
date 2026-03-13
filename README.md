@@ -762,12 +762,110 @@ ls "$STORAGE_DIR/data"
 
 重新执行下载数据集的命令。
 
-## 实验结果参考
+## 实验结果
 
-| 数据集 | MAE | CLIP | DINO | Fusion |
-|--------|-----|------|------|--------|
-| CIFAR-10 | ~95% | ~96% | ~95% | ~97% |
-| CIFAR-100 | ~75% | ~82% | ~78% | ~85% |
-| Flowers-102 | ~85% | ~90% | ~88% | ~93% |
-| MNIST | ~99% | ~99% | ~98% | ~99% |
-| SVHN | ~95% | ~97% | ~96% | ~98% |
+### 核心发现：融合并非模型越多越好
+
+下图展示了在 10-shot few-shot 设置下，使用 Gated Fusion 方法逐步增加模型数量（CLIP → +DINO → +MAE → +SigLIP → +ConvNeXt → +Data2Vec）的准确率变化：
+
+![All Datasets Line Plot](assets/all_datasets_lineplot.png)
+
+### CIFAR-100：不同融合方法对比
+
+![CIFAR-100 Fusion Methods](assets/cifar100_fusion_lineplot.png)
+
+### 热力图：相对于单模型 baseline 的准确率变化
+
+![Fusion Heatmap](assets/fusion_heatmap.png)
+
+### 详细数据（Gated Fusion, 10-shot Few-Shot）
+
+| 数据集 | 1模型 (CLIP) | 2模型 (+DINO) | 3模型 (+MAE) | 4模型 (+SigLIP) | 5模型 (+ConvNeXt) | 6模型 (+Data2Vec) | 最佳 |
+|--------|-------------|--------------|-------------|----------------|-------------------|-------------------|------|
+| **STL10** | 91.44% | 95.34% | 95.21% | **95.71%** | 94.74% | 94.99% | 4模型 |
+| **Pets** | 88.99% | 94.19% | 94.06% | 94.71% | **95.48%** | 95.45% | 5模型 |
+| **EuroSAT** | 83.50% | 88.15% | 88.11% | 86.94% | **88.72%** | 87.65% | 5模型 |
+| **DTD** | 67.93% | 75.85% | 75.16% | 76.54% | **76.70%** | 76.28% | 5模型 |
+| **GTSRB** | 67.63% | 66.47% | 63.30% | **75.00%** | 71.82% | 70.75% | 4模型 |
+| **SVHN** | 29.76% | 25.68% | 26.40% | **35.42%** | 34.05% | 32.18% | 4模型 |
+| **Country211** | **29.62%** | 27.47% | 26.92% | 27.08% | 26.87% | 25.92% | 1模型 |
+
+### 每个数据集的最优模型数
+
+| 数据集 | 最佳准确率 | 最优模型数 |
+|--------|-----------|-----------|
+| STL10 | 95.71% | 4 |
+| Pets | 95.48% | 5 |
+| EuroSAT | 88.72% | 5 |
+| DTD | 76.70% | 5 |
+| GTSRB | 75.00% | 4 |
+| SVHN | 35.42% | 4 |
+| Country211 | 29.62% | 1 |
+
+### 关键结论
+
+1. **CLIP → CLIP + DINO 的跃升最大**：几乎所有数据集都在加入 DINO 后获得 3-5% 的显著提升
+2. **4 模型是一个常见甜点**：STL10、GTSRB、SVHN 都在 4 模型时达到最佳
+3. **5 模型之后普遍下降**：加入第 6 个模型（Data2Vec）几乎总是带来轻微退化
+4. **Country211 是例外**：单模型 CLIP 就是最佳，融合反而降低性能
+5. **最优模型子集因数据集而异**：这正是动态路由方法的核心动机
+
+---
+
+## 动态路由实验规划
+
+上述结果表明，固定模型组合无法适配所有数据集。动态路由方法的目标是**让网络自己学习每个样本的最优模型子集**。
+
+### 实验设计
+
+#### 第一轮：验证路由方法有效性
+
+在所有 7 个已有结果的数据集上，使用 6 个默认模型，对比 3 种路由方法与 Gated baseline：
+
+```bash
+# 对每个数据集 × 每种路由方法
+for dataset in svhn eurosat stl10 pets dtd gtsrb country211; do
+    for method in gated topk_router moe_router attention_router; do
+        python main.py --dataset $dataset --model fusion \
+            --fusion_method $method \
+            --fusion_models clip,dino,mae,siglip,convnext,data2vec \
+            --router_k 2 --storage_dir "$STORAGE_DIR" \
+            --seed 42 --epochs 10 --batch_size 128 --cache_dtype fp32
+    done
+done
+```
+
+**预期产出表格**：
+
+| 数据集 | Gated (6模型) | Top-K Router (k=2) | MoE Router | Attention Router |
+|--------|-------------|-------------------|------------|-----------------|
+| STL10 | 94.99% | ? | ? | ? |
+| Pets | 95.45% | ? | ? | ? |
+| EuroSAT | 87.65% | ? | ? | ? |
+| ... | ... | ... | ... | ... |
+
+**核心问题**：路由方法能否在使用全部 6 个模型的情况下，达到或超过手动选择最优子集（4-5模型）的效果？
+
+#### 第二轮：Top-K Router 的 k 值消融
+
+```bash
+# 在表现差异最大的数据集上（如 SVHN、GTSRB）消融 k 值
+for dataset in svhn gtsrb stl10; do
+    for k in 1 2 3 4 5; do
+        python main.py --dataset $dataset --model fusion \
+            --fusion_method topk_router \
+            --fusion_models clip,dino,mae,siglip,convnext,data2vec \
+            --router_k $k --storage_dir "$STORAGE_DIR" \
+            --seed 42 --epochs 10 --batch_size 128 --cache_dtype fp32
+    done
+done
+```
+
+**预期产出**：k 值 vs 准确率曲线，验证路由器是否能自动发现最优模型数。
+
+#### 第三轮：路由决策可视化分析
+
+训练完 Top-K Router 后，分析路由器的选择偏好：
+- 每个数据集中各模型被选择的频率分布
+- 不同类别的样本是否偏好不同的模型组合
+- 路由决策与样本难度的关系
