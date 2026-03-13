@@ -384,8 +384,18 @@ python main.py --dataset cifar100 --model fusion \
 | Gated Fusion | `--fusion_method gated` | `g⊙[z_c;z_d;z_m]` | 512 | 门控融合，sample-wise自适应权重 |
 | Difference Concat | `--fusion_method difference_concat` | `[z;z;z_c-z_d;z_c-z_m;z_d-z_m]` | 256×N+pairwise | 显式建模表征差异 |
 | Hadamard Concat | `--fusion_method hadamard_concat` | `[z;z;z_c⊙z_d;z_c⊙z_m;z_d⊙z_m]` | 256×N+pairwise | 逐元素乘积交互 |
+| Bilinear Concat | `--fusion_method bilinear_concat` | `[z; sqrt_norm(z_i⊗z_j)]` | 64×N+4096×pairs | 外积捕捉所有跨维度交叉项 (Lin et al., ICCV 2015) |
 
-#### 论文启发的复杂方法
+#### 论文启发的高级融合方法
+
+| 方法 | 参数 | 公式 | 说明 |
+|------|------|------|------|
+| FiLM | `--fusion_method film` | `z_i = γ_i·x_i + β_i` | 特征仿射调制，γ/β 由其他模型生成 (Perez et al., AAAI 2018) |
+| Context Gating | `--fusion_method context_gating` | `σ(Wz+b)⊙z` | 维度级自门控 (Miech et al., 2017, YouTube-8M 冠军) |
+| LMF | `--fusion_method lmf` | `Σ_r∏_m(W_r·z_m)` | 低秩多模态融合，捕捉高阶交互 (Liu et al., ACL 2018) |
+| SE-Fusion | `--fusion_method se_fusion` | SE bottleneck attention | Squeeze-Excitation 通道注意力 (Hu et al., CVPR 2018) |
+
+#### Token 级复杂方法
 
 | 方法 | 参数 | 粒度 | 说明 |
 |------|------|------|------|

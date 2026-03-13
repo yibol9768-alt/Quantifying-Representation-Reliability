@@ -55,6 +55,10 @@ def parse_args():
                             "difference_concat",# Baseline D: difference-aware concat
                             "hadamard_concat",  # Baseline E: hadamard interaction concat
                             "bilinear_concat",  # Baseline G: bilinear pooling (outer product)
+                            "film",             # FiLM: feature-wise linear modulation
+                            "context_gating",   # Context Gating: per-dimension self-gating
+                            "lmf",              # LMF: low-rank multimodal fusion
+                            "se_fusion",        # SE-Fusion: squeeze-excitation attention
                             "late_fusion",      # Baseline F: late fusion (logit-level ensemble)
                             "comm",             # Paper-inspired: COMM
                             "mmvit",            # Paper-inspired: MMViT
@@ -192,7 +196,9 @@ def is_trainable_fusion(args) -> bool:
     # All new baseline methods are trainable
     trainable_methods = {
         "proj_concat", "weighted_sum", "gated",
-        "difference_concat", "hadamard_concat", "bilinear_concat", "comm", "mmvit",
+        "difference_concat", "hadamard_concat", "bilinear_concat",
+        "film", "context_gating", "lmf", "se_fusion",
+        "comm", "mmvit",
         "topk_router", "moe_router", "attention_router",
     }
     # In harmonized mode, concat has a trainable projection for fair comparison.
