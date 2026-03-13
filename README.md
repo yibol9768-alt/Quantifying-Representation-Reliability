@@ -853,21 +853,30 @@ ls "$STORAGE_DIR/data"
 4. **Attention Router 适合高类别数**：Country211 (211类) 上唯一超越其他方法，模型间交互建模对细粒度分类有帮助
 5. **Top-K Router 需改进**：k=2 的稀疏选择过于激进，后续需消融 k 值
 
+### Round 2：Top-K Router k 值消融
+
+**实验配置**：SVHN / GTSRB / STL10, 6 模型, 10-shot, 10 epochs, k = 1~5
+
+![Round 2 Top-K Ablation](assets/routing_round2_topk_ablation.png)
+
+| 数据集 | k=1 | k=2 | k=3 | k=4 | k=5 | 最佳 k |
+|--------|-----|-----|-----|-----|-----|--------|
+| SVHN | 14.97% | 20.15% | 24.11% | **25.16%** | 20.89% | k=4 |
+| GTSRB | 26.56% | 52.49% | 54.89% | 56.82% | **58.23%** | k=5 |
+| STL10 | 82.67% | 91.91% | 91.55% | 93.12% | **93.47%** | k=5 |
+
+#### Round 2 分析：Top-K 的硬选择本质上劣于 soft routing
+
+1. **k=1 灾难性差**：强制只选 1 个模型时，straight-through estimator 的梯度过于稀疏，路由器学不好（SVHN 14.97%、GTSRB 26.56%）
+2. **GTSRB 和 STL10 单调递增（k↑ → acc↑）**：说明这些数据集需要多模型协同而非筛选。k=5（选 5/6）本质上已接近 soft routing
+3. **SVHN 是唯一有"甜点"的数据集**：k=4 (25.16%) > k=5 (20.89%)，路由器学会了丢弃 2 个最无用的模型。但即使最优 k=4 仍低于 Gated (28.93%)
+4. **即使 k 值最优，Top-K 仍难以匹敌 soft 方法**：
+   - GTSRB: Top-K (58.23%) ≈ MoE (58.72%)，几乎追平
+   - STL10: Top-K (93.47%) < MoE (94.75%)，差 1.28pp
+   - SVHN: Top-K (25.16%) < Gated (28.93%)，差 3.77pp
+5. **结论：Top-K Router 的价值在于可解释性而非性能**。硬选择引入的梯度噪声使其天花板低于 soft routing。如果目标是最高准确率用 MoE Router；如果目标是分析模型贡献度用 Top-K Router
+
 ### 后续实验计划
-
-#### Round 2：Top-K Router k 值消融
-
-```bash
-for dataset in svhn gtsrb stl10; do
-    for k in 1 2 3 4 5; do
-        python main.py --dataset $dataset --model fusion \
-            --fusion_method topk_router \
-            --fusion_models clip,dino,mae,siglip,convnext,data2vec \
-            --router_k $k --storage_dir "$STORAGE_DIR" \
-            --seed 42 --epochs 10 --batch_size 128 --cache_dtype fp32
-    done
-done
-```
 
 #### Round 3：路由决策可视化
 
