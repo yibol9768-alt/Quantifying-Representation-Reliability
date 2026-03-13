@@ -836,32 +836,33 @@ ls "$STORAGE_DIR/data"
 
 ![Round 1 Summary](assets/routing_round1_summary.png)
 
-| 数据集 | Gated | Top-K Router | MoE Router | Attention Router | 最佳方法 |
-|--------|-------|-------------|------------|------------------|----------|
-| SVHN | **28.93%** | N/A | 21.17% | 21.91% | Gated |
-| EuroSAT | **82.44%** | 73.61% | 82.35% | 78.85% | Gated |
-| STL10 | 93.17% | 91.91% | **94.75%** | 92.85% | MoE Router |
-| Pets | 94.47% | 94.47% | **94.63%** | 94.19% | MoE Router |
-| DTD | 73.09% | 69.15% | **73.67%** | 70.43% | MoE Router |
-| GTSRB | 46.93% | 52.49% | **58.72%** | 46.49% | MoE Router |
-| Country211 | 8.72% | 11.63% | 11.52% | **12.34%** | Attention Router |
+| 数据集 | Concat | Gated | Top-K Router | MoE Router | Attention Router | 最佳方法 |
+|--------|--------|-------|-------------|------------|------------------|----------|
+| SVHN | 15.63% | **28.93%** | N/A | 21.17% | 21.91% | Gated |
+| EuroSAT | 82.13% | **82.44%** | 73.61% | 82.35% | 78.85% | Gated |
+| STL10 | **94.41%** | 93.17% | 91.91% | 94.75% | 92.85% | Concat |
+| Pets | **94.79%** | 94.47% | 94.47% | 94.63% | 94.19% | Concat |
+| DTD | 73.67% | 73.09% | 69.15% | **73.67%** | 70.43% | Concat / MoE |
+| GTSRB | 30.55% | 46.93% | 52.49% | **58.72%** | 46.49% | MoE Router |
+| Country211 | 11.07% | 8.72% | 11.63% | 11.52% | **12.34%** | Attention Router |
 
 #### 方法获胜统计
 
 | 方法 | 获胜次数 | 擅长场景 |
 |------|---------|---------|
-| MoE Router | **4/7** | 中等-高难度分类 (STL10, Pets, DTD, GTSRB) |
-| Gated | 2/7 | 低类别数简单任务 (SVHN, EuroSAT) |
+| Concat | **2/7** | 高准确率简单任务 (STL10, Pets)，模型特征天然互补 |
+| Gated | 2/7 | 低类别数任务 (SVHN, EuroSAT)，需要自适应抑制噪声 |
+| MoE Router | 2/7 | 中等-高难度分类 (DTD, GTSRB)，需要自适应模型选择 |
 | Attention Router | 1/7 | 高类别数困难任务 (Country211, 211类) |
 | Top-K Router | 0/7 | k=2 过于激进，需消融实验 |
 
 #### Round 1 关键发现
 
-1. **MoE Router 整体最佳**：soft routing + load-balancing + entropy 正则的组合最稳定，在 4/7 数据集上胜出
-2. **GTSRB 提升最显著**：MoE Router (58.72%) 比 Gated (46.93%) 高出 **+11.79pp**，交通标志识别从自适应路由获益最大
-3. **Gated 在简单任务上仍有优势**：SVHN、EuroSAT (10类) 上简单门控足够，复杂路由反而引入噪声
-4. **Attention Router 适合高类别数**：Country211 (211类) 上唯一超越其他方法，模型间交互建模对细粒度分类有帮助
-5. **Top-K Router 需改进**：k=2 的稀疏选择过于激进，后续需消融 k 值
+1. **Concat baseline 意外表现不错**：STL10 (94.41%) 和 Pets (94.79%) 上简单拼接优于所有动态路由方法，说明这些数据集上模型特征天然互补，复杂路由反而增加训练难度
+2. **MoE Router 在 GTSRB 上提升最大**：58.72% vs Concat 30.55%，+28.17pp。交通标志识别从自适应路由获益最大
+3. **Gated 在 SVHN 上大幅超越 Concat**：28.93% vs 15.63%，+13.30pp。digit 识别需要自适应权重来抑制不相关模型的噪声
+4. **Attention Router 适合高类别数**：Country211 (211类) 上唯一超越其他方法
+5. **动态路由 vs Concat 的选择取决于数据集特性**：简单/高准确率数据集用 Concat 即可，复杂/不平衡数据集（如 GTSRB、SVHN）则需要 MoE/Gated 路由
 
 ### Round 2：Top-K Router k 值消融
 
