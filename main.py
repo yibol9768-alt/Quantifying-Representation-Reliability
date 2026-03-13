@@ -57,6 +57,9 @@ def parse_args():
                             "late_fusion",      # Baseline F: late fusion (logit-level ensemble)
                             "comm",             # Paper-inspired: COMM
                             "mmvit",            # Paper-inspired: MMViT
+                            "topk_router",      # Dynamic routing: Top-K sparse router
+                            "moe_router",       # Dynamic routing: Soft MoE router
+                            "attention_router", # Dynamic routing: Self-attention router
                         ],
                         help="Fusion method when --model fusion")
     parser.add_argument("--fusion_models", type=str, default="mae,clip,dino",
@@ -77,6 +80,12 @@ def parse_args():
                         help="MMViT-inspired: preferred number of attention heads per stage")
     parser.add_argument("--mmvit_max_position_tokens", type=int, default=256,
                         help="MMViT-inspired: reference length of learnable positional embeddings")
+    parser.add_argument("--router_k", type=int, default=2,
+                        help="Top-K router: number of models to select per sample")
+    parser.add_argument("--router_aux_weight", type=float, default=0.01,
+                        help="Weight for router auxiliary loss (load-balancing, etc.)")
+    parser.add_argument("--attention_router_heads", type=int, default=4,
+                        help="Attention router: number of self-attention heads")
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--batch_size", type=int, default=128)
@@ -170,6 +179,8 @@ def get_fusion_kwargs(args, num_classes: int = 100) -> dict:
         "mmvit_max_position_tokens": args.mmvit_max_position_tokens,
         "fusion_output_dim": args.fusion_output_dim if use_fusion_harmonization(args) else None,
         "num_classes": num_classes,  # For late_fusion
+        "router_k": args.router_k,
+        "attention_router_heads": args.attention_router_heads,
     }
 
 
@@ -180,7 +191,8 @@ def is_trainable_fusion(args) -> bool:
     # All new baseline methods are trainable
     trainable_methods = {
         "proj_concat", "weighted_sum", "gated",
-        "difference_concat", "hadamard_concat", "comm", "mmvit"
+        "difference_concat", "hadamard_concat", "comm", "mmvit",
+        "topk_router", "moe_router", "attention_router",
     }
     # In harmonized mode, concat has a trainable projection for fair comparison.
     if use_fusion_harmonization(args):
@@ -568,6 +580,8 @@ def train_with_offline_cache(args, config):
                         features = extractor.forward_from_cache(cached_inputs)
                         outputs = classifier(features)
                         loss = criterion(outputs, labels)
+                        if hasattr(extractor, 'aux_loss') and extractor.aux_loss is not None:
+                            loss = loss + args.router_aux_weight * extractor.aux_loss
                     scaler.scale(loss).backward()
                     scaler.step(optimizer)
                     scaler.update()
@@ -575,6 +589,8 @@ def train_with_offline_cache(args, config):
                     features = extractor.forward_from_cache(cached_inputs)
                     outputs = classifier(features)
                     loss = criterion(outputs, labels)
+                    if hasattr(extractor, 'aux_loss') and extractor.aux_loss is not None:
+                        loss = loss + args.router_aux_weight * extractor.aux_loss
                     loss.backward()
                     optimizer.step()
             else:
@@ -767,6 +783,8 @@ def train_online(args, config):
                         features = extractor(images)
                         outputs = classifier(features)
                         loss = criterion(outputs, labels)
+                        if hasattr(extractor, 'aux_loss') and extractor.aux_loss is not None:
+                            loss = loss + args.router_aux_weight * extractor.aux_loss
                     scaler.scale(loss).backward()
                     scaler.step(optimizer)
                     scaler.update()
@@ -774,6 +792,8 @@ def train_online(args, config):
                     features = extractor(images)
                     outputs = classifier(features)
                     loss = criterion(outputs, labels)
+                    if hasattr(extractor, 'aux_loss') and extractor.aux_loss is not None:
+                        loss = loss + args.router_aux_weight * extractor.aux_loss
                     loss.backward()
                     optimizer.step()
             else:

@@ -349,6 +349,7 @@ python main.py --dataset svhn --model dino \
 建议：
 - `concat`、`proj_concat`、`weighted_sum`、`gated`、`difference_concat`、`hadamard_concat` 适合 2-10 个模型的横向实验。
 - `comm`、`mmvit` 更适合 2-3 个以 ViT/CLIP/DINO 为主的 token 型 backbone。
+- `topk_router`、`moe_router`、`attention_router` 是动态路由方法，适合候选模型较多时让网络自动学习最优模型子集/权重。
 - 默认所有训练都会使用 few-shot 训练集，每类固定 10-shot；具体采样由 `--seed` 控制。
 
 ```bash
@@ -390,6 +391,21 @@ python main.py --dataset cifar100 --model fusion \
 |------|------|------|------|
 | COMM | `--fusion_method comm` | Token 级 | `COMM-inspired` 分类适配：CLIP 主分支，全层/深层层聚合，非主分支通过残差 MLP 对齐后再做 token 增强 |
 | MMViT | `--fusion_method mmvit` | Token 级 | `MMViT-inspired` 分类适配：保留 4-stage 16-block 结构（`[0,0,9,1]`）、cross-attn 与 scaled self-attn，并将多模型 token 视作多视图输入 |
+
+#### 动态路由 / MoE 方法
+
+| 方法 | 参数 | 路由方式 | 说明 |
+|------|------|----------|------|
+| Top-K Router | `--fusion_method topk_router` | Hard（稀疏） | Switch Transformer / V-MoE 启发：每个样本只选 top-k 个模型，带 load-balancing loss 防止路由坍缩 |
+| Soft MoE Router | `--fusion_method moe_router` | Soft（全参与） | GShard / ST-MoE 启发：所有模型参与但权重自适应，带 load-balancing + entropy 正则 + z-loss |
+| Attention Router | `--fusion_method attention_router` | Soft（全参与） | FusionFM 启发：模型特征作为 token 过 Multi-Head Self-Attention，捕捉模型间交互关系 |
+
+动态路由的核心价值：**不需要预先知道该用哪些模型**。把所有候选模型都喂进去，路由器自动学习每个样本的最优模型组合。训完后可以分析路由决策，看哪些模型被选得多、哪些基本没用。
+
+相关参数：
+- `--router_k`：Top-K 路由的 k 值（默认 2），仅 `topk_router` 使用
+- `--router_aux_weight`：辅助损失权重（默认 0.01），影响 load-balancing 等正则项的强度
+- `--attention_router_heads`：Attention 路由的注意力头数（默认 4），仅 `attention_router` 使用
 
 #### Baseline 方法详解
 
@@ -452,6 +468,35 @@ python main.py --dataset cifar100 --model fusion \
     --epochs 10 --batch_size 128 --cache_dtype fp32
 ```
 
+### 动态路由示例
+
+```bash
+# Top-K Router：自动从 4 个模型中为每个样本选 2 个最合适的
+python main.py --dataset cifar100 --model fusion \
+    --fusion_method topk_router --fusion_models clip,dino,mae,siglip \
+    --router_k 2 --storage_dir "$STORAGE_DIR" \
+    --epochs 10 --batch_size 128 --cache_dtype fp32
+
+# Soft MoE Router：所有模型参与，自适应权重
+python main.py --dataset cifar100 --model fusion \
+    --fusion_method moe_router --fusion_models clip,dino,mae,siglip \
+    --storage_dir "$STORAGE_DIR" \
+    --epochs 10 --batch_size 128 --cache_dtype fp32
+
+# Attention Router：模型间自注意力交互
+python main.py --dataset cifar100 --model fusion \
+    --fusion_method attention_router --fusion_models clip,dino,mae,siglip \
+    --attention_router_heads 4 --storage_dir "$STORAGE_DIR" \
+    --epochs 10 --batch_size 128 --cache_dtype fp32
+
+# 把所有 10 个模型都喂进去，让路由器自己选
+python main.py --dataset cifar100 --model fusion \
+    --fusion_method topk_router \
+    --fusion_models clip,dino,mae,siglip,vit,swin,beit,data2vec,openclip,convnext \
+    --router_k 3 --storage_dir "$STORAGE_DIR" \
+    --epochs 10 --batch_size 128 --cache_dtype fp32
+```
+
 ### 横向对比
 
 ```bash
@@ -470,6 +515,14 @@ for method in comm mmvit; do
         --fusion_method $method --fusion_models clip,dino \
         --fusion_output_dim 1024 --seed 42 \
         --epochs 10 --batch_size 128 --cache_dtype fp32
+done
+
+# 动态路由方法对比（适合候选模型多的场景）
+for method in topk_router moe_router attention_router; do
+    python main.py --dataset cifar100 --model fusion \
+        --storage_dir "$STORAGE_DIR" \
+        --fusion_method $method --fusion_models clip,dino,mae,siglip \
+        --seed 42 --epochs 10 --batch_size 128 --cache_dtype fp32
 done
 ```
 
@@ -494,7 +547,7 @@ bash experiments/run_fusion_experiments.sh
 
 实验系统地评估：
 - **模型数量影响**：1 → 10 个模型
-- **融合方法对比**：6 种 baseline 方法的横向对比
+- **融合方法对比**：6 种 baseline + 3 种动态路由方法的横向对比
 - **结果自动收集**：生成 CSV 和 Markdown 报告
 
 ### 实验矩阵
