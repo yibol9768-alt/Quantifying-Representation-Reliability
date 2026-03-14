@@ -154,8 +154,10 @@ def main():
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--start_model", type=str, default="clip",
                         help="Starting model for greedy selection")
-    parser.add_argument("--threshold", type=float, default=0.85,
-                        help="CKA threshold for greedy selection")
+    parser.add_argument("--max_redundancy", type=float, default=0.25,
+                        help="Max avg CKA of new model to existing set for "
+                             "recommended subset cutoff. Full ordering is always "
+                             "produced regardless.")
     parser.add_argument("--max_samples", type=int, default=2000,
                         help="Max samples per dataset for CKA (0=all). "
                              "Default 2000 to manage memory with patch tokens.")
@@ -266,12 +268,24 @@ def main():
     }
 
     # Strategy A: Greedy per dataset
+    greedy_traces = {}
+    greedy_full_orders = {}
     for dataset in datasets:
-        selected = greedy_selection(
-            all_cka_matrices[dataset], models, args.start_model, args.threshold
+        recommended, full_order, trace = greedy_selection(
+            all_cka_matrices[dataset], models, args.start_model, args.max_redundancy
         )
-        selection_results["greedy"][dataset] = selected
-        print(f"  Greedy ({dataset}): {selected}")
+        selection_results["greedy"][dataset] = {
+            "recommended": recommended,
+            "full_order": full_order,
+        }
+        greedy_traces[dataset] = trace
+        greedy_full_orders[dataset] = full_order
+        print(f"  Greedy ({dataset}): recommended={recommended} | full={full_order}")
+        for step in trace:
+            marker = ">>" if step["step"] == len(recommended) + 1 and len(recommended) < len(full_order) else "  "
+            print(f"   {marker} step {step['step']}: {step['model']:>12s}  "
+                  f"cka_to_set={step['avg_cka_to_set']:.4f}  "
+                  f"diversity={step['set_diversity']:.4f}")
 
     # Strategy B: Max diversity (k=3 and k=4) using average CKA across datasets
     avg_matrix = np.mean(list(all_cka_matrices.values()), axis=0)
@@ -282,12 +296,16 @@ def main():
 
     # Strategy C: Task-adaptive
     task_results = task_adaptive_selection(
-        all_cka_matrices, models, args.start_model, args.threshold
+        all_cka_matrices, models, args.start_model, args.max_redundancy
     )
-    selection_results["task_adaptive"] = task_results
-    print(f"  Task Adaptive:")
-    for dataset, selected in task_results.items():
-        print(f"    {dataset}: {selected}")
+    selection_results["task_adaptive"] = {}
+    print(f"  Task Adaptive (max_redundancy={args.max_redundancy}):")
+    for dataset, (recommended, full_order, trace) in task_results.items():
+        selection_results["task_adaptive"][dataset] = {
+            "recommended": recommended,
+            "full_order": full_order,
+        }
+        print(f"    {dataset}: {recommended} ({len(recommended)} models)")
 
     # ---- Step 4: Save results ----
     # Selection results JSON
@@ -305,7 +323,7 @@ def main():
     lines.append(f"\nModels analyzed: {models}")
     lines.append(f"Datasets: {datasets}")
     lines.append(f"Start model: {args.start_model}")
-    lines.append(f"CKA threshold: {args.threshold}")
+    lines.append(f"Max redundancy: {args.max_redundancy}")
 
     lines.append(f"\n{'=' * 60}")
     lines.append("Average CKA Matrix (across all datasets)")
@@ -320,17 +338,30 @@ def main():
     lines.append("Selection Results")
     lines.append("=" * 60)
 
-    lines.append("\n--- Strategy A: Greedy Selection ---")
-    for dataset, selected in selection_results["greedy"].items():
-        lines.append(f"  {dataset}: {' -> '.join(selected)} ({len(selected)} models)")
+    lines.append(f"\n--- Strategy A: Greedy Selection (max_redundancy={args.max_redundancy}) ---")
+    for dataset, info in selection_results["greedy"].items():
+        rec = info["recommended"]
+        full = info["full_order"]
+        lines.append(f"  {dataset}:")
+        lines.append(f"    Recommended: {' -> '.join(rec)} ({len(rec)} models)")
+        lines.append(f"    Full order:  {' -> '.join(full)}")
+        if dataset in greedy_traces:
+            for step in greedy_traces[dataset]:
+                cutoff = " <<< cutoff" if step["step"] == len(rec) + 1 and len(rec) < len(full) else ""
+                lines.append(f"      step {step['step']}: {step['model']:>12s}  "
+                             f"cka_to_set={step['avg_cka_to_set']:.4f}  "
+                             f"diversity={step['set_diversity']:.4f}{cutoff}")
 
     lines.append("\n--- Strategy B: Max Diversity ---")
     for key, selected in selection_results["max_diversity"].items():
         lines.append(f"  {key}: {', '.join(selected)}")
 
-    lines.append("\n--- Strategy C: Task-Adaptive ---")
-    for dataset, selected in selection_results["task_adaptive"].items():
-        lines.append(f"  {dataset}: {' -> '.join(selected)} ({len(selected)} models)")
+    lines.append(f"\n--- Strategy C: Task-Adaptive (max_redundancy={args.max_redundancy}) ---")
+    for dataset, info in selection_results["task_adaptive"].items():
+        rec = info["recommended"]
+        full = info["full_order"]
+        lines.append(f"  {dataset}: {' -> '.join(rec)} ({len(rec)} models)"
+                     f"  [full: {' -> '.join(full)}]")
 
     # Cross-dataset analysis
     lines.append(f"\n{'=' * 60}")

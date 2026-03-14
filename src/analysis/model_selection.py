@@ -1,64 +1,95 @@
 """CKA-guided model selection strategies."""
 
 import numpy as np
-from itertools import combinations
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
+
+
+def _avg_pairwise_cka(cka_matrix: np.ndarray, indices: List[int]) -> float:
+    """Compute average pairwise CKA for a set of model indices."""
+    if len(indices) < 2:
+        return 0.0
+    vals = []
+    for i in range(len(indices)):
+        for j in range(i + 1, len(indices)):
+            vals.append(cka_matrix[indices[i], indices[j]])
+    return float(np.mean(vals))
 
 
 def greedy_selection(
     cka_matrix: np.ndarray,
     model_names: List[str],
     start_model: str,
-    threshold: float = 0.85,
-) -> List[str]:
-    """Strategy A: Greedy selection starting from the best single model.
+    max_redundancy: float = 0.25,
+) -> Tuple[List[str], List[str], List[dict]]:
+    """Strategy A: Greedy selection with redundancy-based stopping.
 
     Starting from start_model, iteratively add the model with the lowest
-    average CKA to the current set. Stop when the average pairwise CKA
-    of the set would exceed the threshold.
+    average CKA to the current set. Always computes the full ordering.
+    Recommends stopping when the next model's avg CKA to the existing
+    set exceeds max_redundancy.
 
     Args:
         cka_matrix: [M, M] CKA similarity matrix.
         model_names: List of model names corresponding to matrix rows/cols.
         start_model: Name of the starting model.
-        threshold: Maximum allowed average pairwise CKA. Stop before exceeding.
+        max_redundancy: Maximum avg CKA of new model to existing set.
+            Models exceeding this are still included in the full ordering
+            but excluded from the recommended subset.
 
     Returns:
-        List of selected model names in order of addition.
+        (recommended, full_order, trace) where:
+          - recommended: models selected before hitting the redundancy limit
+          - full_order: all models in greedy diversity order
+          - trace: per-step details (model, avg_cka_to_set, set_diversity)
     """
     name_to_idx = {name: i for i, name in enumerate(model_names)}
     selected = [start_model]
     remaining = [m for m in model_names if m != start_model]
+    cutoff = None  # index where recommended subset ends
 
+    trace = [{
+        "step": 1,
+        "model": start_model,
+        "avg_cka_to_set": 0.0,
+        "set_diversity": 1.0,
+    }]
+
+    step = 2
     while remaining:
         best_model = None
         best_avg_cka = float("inf")
 
         for candidate in remaining:
             c_idx = name_to_idx[candidate]
-            # Average CKA between candidate and all currently selected models
             cka_vals = [cka_matrix[name_to_idx[s], c_idx] for s in selected]
-            avg_cka = np.mean(cka_vals)
+            avg_cka = float(np.mean(cka_vals))
             if avg_cka < best_avg_cka:
                 best_avg_cka = avg_cka
                 best_model = candidate
 
-        # Check if adding this model would exceed threshold
-        trial_set = selected + [best_model]
-        trial_indices = [name_to_idx[m] for m in trial_set]
-        pairwise_ckas = []
-        for i_idx in range(len(trial_indices)):
-            for j_idx in range(i_idx + 1, len(trial_indices)):
-                pairwise_ckas.append(cka_matrix[trial_indices[i_idx], trial_indices[j_idx]])
-        avg_pairwise = np.mean(pairwise_ckas)
-
-        if avg_pairwise > threshold and len(selected) >= 2:
-            break
+        # Check redundancy threshold for recommended cutoff
+        if cutoff is None and best_avg_cka > max_redundancy and len(selected) >= 2:
+            cutoff = len(selected)
 
         selected.append(best_model)
         remaining.remove(best_model)
 
-    return selected
+        trial_indices = [name_to_idx[m] for m in selected]
+        set_diversity = 1.0 - _avg_pairwise_cka(cka_matrix, trial_indices)
+
+        trace.append({
+            "step": step,
+            "model": best_model,
+            "avg_cka_to_set": best_avg_cka,
+            "set_diversity": set_diversity,
+        })
+        step += 1
+
+    if cutoff is None:
+        cutoff = len(selected)
+
+    recommended = selected[:cutoff]
+    return recommended, selected, trace
 
 
 def max_diversity_selection(
@@ -105,7 +136,7 @@ def max_diversity_selection(
         for candidate in remaining:
             c_idx = name_to_idx[candidate]
             cka_vals = [cka_matrix[name_to_idx[s], c_idx] for s in selected]
-            avg_cka = np.mean(cka_vals)
+            avg_cka = float(np.mean(cka_vals))
             if avg_cka < best_avg_cka:
                 best_avg_cka = avg_cka
                 best_model = candidate
@@ -119,8 +150,8 @@ def task_adaptive_selection(
     cka_matrices: Dict[str, np.ndarray],
     model_names: List[str],
     start_model: str,
-    threshold: float = 0.85,
-) -> Dict[str, List[str]]:
+    max_redundancy: float = 0.25,
+) -> Dict[str, Tuple[List[str], List[str], List[dict]]]:
     """Strategy C: Per-dataset greedy selection.
 
     Apply greedy_selection independently per dataset, since different tasks
@@ -130,12 +161,12 @@ def task_adaptive_selection(
         cka_matrices: {dataset_name: [M, M] CKA matrix}.
         model_names: List of model names (same order for all matrices).
         start_model: Starting model for greedy selection.
-        threshold: CKA threshold for greedy selection.
+        max_redundancy: Maximum avg CKA threshold.
 
     Returns:
-        {dataset_name: selected_model_list}.
+        {dataset_name: (recommended, full_order, trace)}.
     """
     results = {}
     for dataset, matrix in cka_matrices.items():
-        results[dataset] = greedy_selection(matrix, model_names, start_model, threshold)
+        results[dataset] = greedy_selection(matrix, model_names, start_model, max_redundancy)
     return results
