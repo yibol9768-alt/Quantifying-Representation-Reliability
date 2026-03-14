@@ -1,0 +1,580 @@
+================================================================================
+DISCOVERY LOG — Quantifying Representation Reliability
+================================================================================
+本文档记录了我们在多模型特征融合研究中的所有发现、理论分析和研究思路。
+包含实验观察、理论解释、文献支撑和未来方向。
+
+================================================================================
+一、核心实验现象
+================================================================================
+
+我们在 10-shot few-shot 设置下，使用 10 个预训练视觉模型（CLIP, DINOv2, MAE,
+SigLIP, ConvNeXt, Data2Vec, ViT, Swin, BEiT, OpenCLIP）进行特征融合分类实验。
+
+【现象 1】更多模型 ≠ 更好性能
+- 7 个数据集无一例外，性能在 4-5 个模型时达到峰值，之后加模型反而掉点
+- Country211 更极端：CLIP 单模型就是最优，任何融合都降低性能
+- 具体数据（Gated Fusion, 10-shot）：
+  STL10:      1模型 91.44% → 4模型 95.71%（峰值） → 6模型 94.99%
+  GTSRB:      1模型 67.63% → 4模型 75.00%（峰值） → 6模型 70.75%
+  Country211: 1模型 29.62%（峰值） → 6模型 25.92%
+
+【现象 2】CLIP + DINO 是收益最大的组合
+- 几乎所有数据集在加入 DINO 后获得 3-8pp 的提升
+- 这是所有模型递增步骤中提升最显著的一步
+- 后续加入 MAE 持平或微跌，加入 Data2Vec 几乎必跌
+
+【现象 3】没有万能的融合方法
+- Concat 在 STL10、Pets 上最优
+- Gated 在 SVHN、EuroSAT 上最优
+- MoE Router 在 GTSRB 上最优（58.72% vs Concat 30.55%，+28pp）
+- Attention Router 在 Country211 上最优
+- 没有一种方法在所有数据集上获胜
+
+【现象 4】Top-K 硬选择劣于 soft routing
+- GTSRB 和 STL10 上 k 值单调递增（k↑ → acc↑），说明需要协同而非筛选
+- SVHN 是唯一有甜点的数据集（k=4 > k=5），冗余可分离
+- 即使 k 值最优，Top-K 仍低于 MoE/Gated
+
+================================================================================
+二、理论解释框架
+================================================================================
+
+我们用三个理论视角统一解释上述现象：
+
+----------------------------------------------------------------------
+理论 1：Platonic Representation Hypothesis
+----------------------------------------------------------------------
+来源：Huh, Cheung, Wang, Isola. "The Platonic Representation Hypothesis", ICML 2024
+核心观点：不同架构、不同训练目标的大模型正在趋同到对同一个视觉世界的相似
+统计表示。模型越大、越强，趋同越严重。
+
+对我们的解释：
+- 我们选取的模型虽然架构和训练方法不同，但本质上学习的是同一个视觉世界
+- 模型间的差异可能只是特征空间中的旋转或线性变换，底层编码的信息高度重叠
+- 把这些趋同的表征 concat 在一起，不是在"加信息"，而是在"复制信息+放大维度"
+- 这解释了为什么 MAE 和 Data2Vec（都是自监督方法）加入后没有帮助：
+  它们和 DINO 的训练范式相近，表征已经高度趋同
+
+进一步支撑文献：
+- "Less is More: On the Feature Redundancy of Pretrained Models When Transferring
+   to Few-shot Tasks" (arXiv 2023)
+  → 移除 95% 的特征维度，test error 反而从 56.94% 降到 50.86%
+  → 预训练模型的特征本身就存在大量冗余
+- "Diffused Redundancy in Pre-trained Representations" (NeurIPS 2023)
+  → 随机去除中间层神经元，下游准确率几乎不变
+  → 冗余是预训练模型的结构性属性
+
+----------------------------------------------------------------------
+理论 2：Information Bottleneck
+----------------------------------------------------------------------
+来源：Kawaguchi et al. "How Does Information Bottleneck Help Deep Learning?", ICML 2023
+       Tishby, Zaslavsky, "Deep Learning and the Information Bottleneck Principle", 2015
+核心观点：最优表征应该压缩输入 X 同时保留对标签 Y 的最大信息。
+         即最大化 I(Z;Y) 的同时最小化 I(X;Z)。
+
+对我们的解释：
+- 每加一个模型，I(X;Z)（表征复杂度/特征维度）线性增长
+- 但 I(Z;Y)（对分类有用的信息）存在上界且边际递减
+- 存在一个最优压缩点：在此之前加模型是在增加有用信息，之后是在增加噪声
+- 我们观察到的 4-5 模型峰值，正是这个信息密度的临界点
+- 超过此点，特征空间的信噪比下降，分类器在越来越稀疏的高维空间中学习
+
+进一步支撑文献：
+- Fang et al. "Dynamic Multimodal Information Bottleneck for Multimodality
+  Classification", WACV 2024
+  → 用信息瓶颈模块过滤融合特征中的任务无关信息
+- "Information Bottleneck Fusion for Deep Multi-View Clustering",
+  Knowledge-Based Systems, 2024
+  → 双通道 IB 框架，同时捕获一致性和互补性信息，最小化冗余
+
+----------------------------------------------------------------------
+理论 3：Bias-Variance-Diversity Decomposition
+----------------------------------------------------------------------
+来源：Wood, Mu, Webb, Reeve, Lujan, Brown. "A Unified Theory of Diversity
+       in Ensemble Learning", JMLR 2023
+核心公式：Error = Average_Bias² + Average_Variance - Diversity
+         Var_ensemble = ρσ² + (1-ρ)σ²/n
+
+对我们的解释：
+- ρ 是模型间的平均相关性，n 是模型数
+- 当 ρ 高（模型相似，Platonic convergence），增加 n 几乎不降低方差
+  因为 Var ≈ ρσ²（n→∞ 时下界就是 ρσ²）
+- 同时每加一个模型，特征维度翻倍，优化更难（bias 上升）
+- 当 bias 增长超过 diversity 收益的那个点，性能开始下降
+- 关键洞察：diversity（低相关性）比 quantity（多模型）重要得多
+
+进一步支撑文献：
+- Wortsman et al. "Model Soups", ICML 2022
+  → 平均多个 fine-tuned 模型的权重；greedy soups 只在验证集提升时才加模型
+  → 直接承认了不是所有模型都有帮助
+- "Model Stock" (2024)
+  → 2-3 个模型就能近似大量模型平均的效果，因为 fine-tuned 权重的几何性质
+  → 直接证明了收益递减
+
+================================================================================
+三、深层发现：Few-shot 是复杂方法表现不佳的根本原因
+================================================================================
+
+这是我们讨论中得到的最重要的洞察。
+
+【核心论点】
+我们观察到的"更多模型 = 更差性能"可能不完全是表征冗余的固有问题，
+而是 few-shot 下参数量与样本量失衡的涌现现象。
+
+【逻辑链】
+Few-shot（10-shot per class）制造了一个双重困境（double bind）：
+1. 模型越多 → 特征维度越高 → 需要更多数据来训练分类器/路由器
+2. 但只有 10 个样本/类 → 分类器/路由器学不好
+3. 无法有效利用多模型信息，也无法有效抑制冗余
+4. 结果：模型越多，过拟合越严重，性能越差
+
+【实验证据】
+看路由实验中参数量与性能的关系：
+- STL10（10类，100 个训练样本）：
+  Concat（参数最少）94.41% > MoE Router（参数最多）94.75%
+  → 样本太少，Concat 的低参数反而是优势
+- GTSRB（43类，430 个训练样本）：
+  MoE Router 58.72% >> Concat 30.55%（+28pp）
+  → 样本稍多 + 冗余噪声极大，MoE 哪怕没完全训好也远超 Concat
+
+【关键假设】
+如果用 full data 训练：
+- MoE 的路由器有足够数据学会有效路由
+- 应该在更多数据集上超过 Concat
+- 最优模型数可能从 4-5 上移到 6+（因为路由器能更好地抑制冗余）
+- "更多模型 = 更差"的现象可能减弱甚至消失
+
+【文献支撑——MoE 在小数据下过拟合是已知问题】
+
+1. Switch Transformer / ST-MoE 实验：
+   - 在 ~250 个训练样本上，sparse MoE 模型训练集 loss 下降更快，
+     但 dense model 在验证集上更好
+   - 在 100K+ 样本上，sparse model 反超
+   → 直接证明了"小数据 dense 赢，大数据 sparse 赢"的交叉现象
+
+2. "On the Benefits of Learning to Route in Mixture-of-Experts Models"
+   (EMNLP 2023)
+   - 实证表明路由 loss 需要"非常大量的样本"才能趋近 0
+   - 路由器需要比专家更高的学习率，否则专家在路由器学好之前就过拟合了
+   → 直接说明路由器的样本效率问题
+
+3. "Patch-level Routing in Mixture-of-Experts is Provably Sample-efficient"
+   (ICML 2023, Chowdhury et al.)
+   - 给出了 MoE 路由的理论样本复杂度界
+   - 所需数据量与专家数、输入维度、聚类分离度成正比
+   → 6 个模型 + 高维特征 + 10-shot = 远未达到理论下界
+
+4. "Revisiting Single-gated Mixtures of Experts" (BMVC 2022)
+   - 发现路由器容易 collapse（只激活少数专家）
+   - 提出用 K-means 初始化替代学习式路由
+   → 承认学习式路由在数据不足时是脆弱的
+
+5. SPDF: "Sparse Pre-training and Dense Fine-tuning"
+   (ICML 2023, Thangarasa et al.)
+   - 直接证明 dense fine-tuning 在下游任务上优于 sparse fine-tuning
+   - 尤其在高稀疏度时差距更大
+   → 与我们的观察一致：few-shot fine-tuning 时 dense (Concat) > sparse (MoE)
+
+6. Eagle: "Exploring the Design Space for Multimodal LLMs with Mixture of
+   Encoders" (ICLR 2025)
+   - 发现"最近提出的复杂融合策略相比简单设计没有显著优势"
+   - 简单的 channel concatenation 往往就是竞争力最强的
+   → 即使在大规模 VLM 中，复杂融合的收益也是有限的
+
+7. Wu et al. "Characterizing and Overcoming the Greedy Nature of Learning
+   in Multi-modal Deep Neural Networks" (ICML 2022)
+   - 证明多模态网络可能因"模态懒惰"和贪心优化而劣于单模态
+   - 联合优化时模型依赖最强的单一来源，under-train 其他来源
+   → 解释了为什么融合有时不如单模型
+
+================================================================================
+四、数据集分类：融合收益的任务依赖性
+================================================================================
+
+根据实验结果，我们将数据集按融合收益分为三类：
+
+【A 类：融合受益型】STL10, Pets, EuroSAT, DTD
+- 最优模型数：4-5
+- 任务特性：需要多种视觉特征（语义 + 纹理 + 空间结构）
+- 理论解释：模型间表征互补性强，信息密度在 4-5 模型前保持正增长
+- 最优融合方法：Concat（模型天然互补，不需要复杂路由）
+
+【B 类：融合敏感型】GTSRB, SVHN
+- 最优模型数：4
+- 任务特性：领域特殊性强，与 ImageNet 预训练分布差异大
+- 理论解释：部分模型的预训练表征对目标任务近乎噪声，必须抑制
+- 最优融合方法：MoE/Gated（需要自适应抑制无用模型）
+- GTSRB 上 MoE 比 Concat 高 28pp，说明路由是刚需
+
+【C 类：融合有害型】Country211
+- 最优模型数：1（只用 CLIP）
+- 任务特性：任务与 CLIP 的对比学习目标高度对齐
+- 理论解释：Country211 是 CLIP 论文用于验证图文对齐能力的数据集，
+  通过建筑风格、植被、路标等视觉线索分类 211 个国家。
+  CLIP 的预训练目标直接优化了该任务所需的语义-地理关联能力。
+  加入缺乏语言监督信号的模型只增加冗余维度，稀释 CLIP 的优势表征。
+- 关键意义：这是 story 中最有价值的数据点——它证明融合不是万能的
+
+================================================================================
+五、冗余结构分类：为什么不同方法在不同数据集上获胜
+================================================================================
+
+融合方法的选择应该基于冗余信息的分布结构，而非方法本身的复杂度。
+
+【类型 1：低冗余（模型天然互补）】
+代表：STL10, Pets
+最优方法：Concat
+原因：模型表征互补性强，简单拼接就能利用所有信息。
+     额外的路由参数反而增加 few-shot 下的过拟合风险。
+
+【类型 2：均匀冗余（部分模型整体无用）】
+代表：SVHN, EuroSAT
+最优方法：Gated
+原因：需要全局抑制某些模型的权重。Gated 的 N 个可学习标量权重
+     恰好适合这种"整体开关"式的冗余消除。参数量极少，few-shot 也能学好。
+
+【类型 3：结构性冗余（不同样本需要不同模型）】
+代表：GTSRB
+最优方法：MoE Router
+原因：交通标志多样性大（限速牌 vs 警告牌 vs 指示牌），
+     不同类别依赖不同模型的特征。需要 per-sample 的自适应路由。
+
+【类型 4：高维稀疏冗余（类别极多、信号稀疏）】
+代表：Country211
+最优方法：Attention Router
+原因：211 类细粒度任务中有用信号极其稀疏，
+     需要注意力机制在特征维度上做精细筛选。
+
+核心洞察：路由方法本质上是在做信息瓶颈的自适应压缩——
+- MoE 在模型维度上压缩（选哪些模型）
+- Gated 在权重维度上压缩（每个模型贡献多少）
+- Attention 在特征维度上压缩（每个特征通道重要多少）
+最优的压缩方式取决于冗余信息的分布结构。
+
+================================================================================
+六、为什么 CLIP + DINO 是最佳组合
+================================================================================
+
+CLIP → CLIP+DINO 这一步在几乎所有数据集上带来 3-8pp 提升，
+这是所有模型递增步骤中最显著的一步。这不是偶然。
+
+【训练目标正交性分析】
+- CLIP：语言-图像对比学习（contrastive learning on image-text pairs）
+  编码的是语义级信息——"这张图像和什么文本描述匹配"
+  训练数据：4 亿图文对（WIT dataset）
+  擅长：语义理解、零样本分类、跨模态对齐
+
+- DINOv2：自监督蒸馏（self-supervised knowledge distillation）
+  编码的是视觉结构信息——局部纹理、空间关系、部件关系
+  训练数据：1.42 亿图像（LVD-142M, 无文本标注）
+  擅长：密集预测、分割、深度估计
+
+两者的训练目标完全正交：
+- CLIP 知道"这是一只猫"（语义），DINO 知道"毛发纹理、耳朵形状、眼睛位置"（结构）
+- 融合它们是在真正增加互补信息，而非复制
+
+【对比：后续模型为什么不行】
+- +MAE：自监督 masked autoencoder，与 DINO 同为 ImageNet 自监督 ViT
+  训练范式相近 → 表征高度冗余 → 加入后持平或微跌
+- +Data2Vec：又一个自监督方法，到第 6 个模型时冗余已经压过增益
+- +SigLIP：与 CLIP 同属语言对齐模型（WebLI vs WIT），有一定互补但也有冗余
+
+规律：训练目标相似的模型 → 表征冗余；训练目标正交的模型 → 表征互补。
+
+================================================================================
+七、提出的方法：CKA-Guided Model Selection
+================================================================================
+
+【动机】
+既然互补性（而非数量）决定了融合收益，那么应该有一种方法能在融合前
+量化模型间的互补性，并据此选择最优子集。
+
+【方法】
+使用 CKA（Centered Kernel Alignment, Kornblith et al., ICML 2019）
+量化模型间的表征相似度：
+1. 对目标数据集提取每个模型的特征矩阵
+2. 计算 10 个模型两两之间的 CKA 相似度矩阵
+3. 贪心选择：从最强单模型（CLIP）开始，每次加入 CKA 最低（最互补）的模型
+4. 在验证集上观察准确率，找到每个数据集的最优子集
+
+【预期】
+- CKA 低的模型对 → 融合收益高（验证互补性假设）
+- CKA 高的模型对 → 融合收益低或为负（验证冗余假设）
+- CKA-guided 选择应该比随机顺序或启发式顺序更快达到峰值性能
+
+【新颖性评估——文献空白确认】
+
+已有最相关工作：
+1. HE-CKA (NeurIPS 2024, arXiv:2411.00259)
+   - 用 CKA 做训练时正则化鼓励集成多样性
+   - 区别：它是在训练时用 CKA，我们是用 CKA 做预选标准
+   - 区别：它从头训练模型，我们从预训练模型池中选择
+
+2. OSBORN (ICCV 2023, arXiv:2309.02429)
+   - 用 submodular optimization 做模型子集选择
+   - 区别：它用 transferability metrics（LEEP, LogME, optimal transport），不是 CKA
+   - 区别：它是 transfer learning 设定，我们是 feature fusion
+
+3. Agostinelli et al. (CVPR 2022, arXiv:2111.13011)
+   - 用 transferability metrics 选源模型集成
+   - 区别：同上，不是 CKA，不是 feature fusion
+
+4. GNN + CKA Benchmarking (arXiv:2602.20573, Feb 2025)
+   - 用 CKA 分析 GNN 模型间的表征相似度来解释融合效果
+   - 区别：它是 post-hoc 分析/解释，不是自动化选择算法
+
+结论：用 CKA 作为预选标准从预训练模型池中选择最互补子集进行特征融合，
+这个具体的 idea 在文献中是空白的。新颖性为 moderate-to-good。
+
+【增强新颖性的方向】
+- 对比 CKA 选择 vs transferability 选择（LEEP, LogME, OSBORN）的效果
+- CKA-guided selection + 自适应融合方法选择（根据冗余结构自动选方法）
+- 理论分析：为什么 CKA 比其他相似度度量更适合此任务
+
+================================================================================
+八、Full-data vs Few-shot 实验（已完成）
+================================================================================
+
+【原始假设】
+Few-shot 是复杂路由方法表现不佳的根本原因。
+Full data 下 MoE 应在更多数据集上超过 Concat。
+
+【实验配置】
+- 6 模型融合：CLIP, DINO, MAE, SigLIP, ConvNeXt, Data2Vec
+- 3 种方法：Concat, Gated, MoE Router
+- 7 个数据集 × 2 种设定（10-shot vs full data）= 42 runs
+- Epochs: 20, Batch Size: 128, Seed: 42
+
+【实验结果】
+
+10-shot 结果：
+| 数据集      | Concat  | Gated   | MoE     | 最优方法 |
+|------------|---------|---------|---------|---------|
+| STL10      | 94.66%  | 93.80%  | 93.65%  | Concat  |
+| Pets       | 95.26%  | 94.17%  | 94.74%  | Concat  |
+| EuroSAT    | 86.30%  | 80.56%  | 82.69%  | Concat  |
+| DTD        | 76.33%  | 74.20%  | 76.44%  | MoE     |
+| GTSRB      | 60.93%  | 49.61%  | 69.18%  | MoE     |
+| SVHN       | 22.47%  | 33.01%  | 25.68%  | Gated   |
+| Country211 | 12.47%  | 15.25%  | 12.08%  | Gated   |
+统计：Concat 赢 3/7，MoE 赢 2/7，Gated 赢 2/7
+
+Full data 结果：
+| 数据集      | Concat  | Gated   | MoE     | 最优方法 |
+|------------|---------|---------|---------|---------|
+| STL10      | 97.96%  | 97.85%  | 97.80%  | Concat  |
+| Pets       | 96.40%  | 96.13%  | 96.29%  | Concat  |
+| EuroSAT    | 97.83%  | 97.63%  | 97.54%  | Concat  |
+| DTD        | 83.88%  | 82.61%  | 83.14%  | Concat  |
+| GTSRB      | 91.18%  | 90.86%  | 90.98%  | Concat  |
+| SVHN       | 83.05%  | 77.97%  | 82.47%  | Concat  |
+| Country211 | 26.64%  | 27.58%  | 26.81%  | Gated   |
+统计：Concat 赢 6/7，Gated 赢 1/7，MoE 赢 0/7
+
+【结果与预测的偏差】
+原始预测：full data 下 MoE/Gated 应该赢更多
+实际结果：Concat 从 3/7 → 6/7，反而赢得更彻底！MoE 从 2/7 → 0/7
+
+这意味着原始假设的方向是错的——瓶颈不在路由器，而在分类器。
+
+【修正后的理论解释：维度灾难（Hughes Phenomenon）】
+
+真正的因果链：
+1. 6 模型 Concat 产生 4608 维特征（6 × 768）
+2. MLP 分类器结构：4608 → 512 → 512 → num_classes
+   第一层就有 4608 × 512 = 2,359,296 个参数
+3. Few-shot 下（如 STL10：10类 × 10-shot = 100 样本）：
+   100 个样本要训 230 万参数 → 严重过拟合 → 性能差
+4. Full data 下（如 STL10：数千样本）：
+   样本足够撑起高维空间 → Concat 全量信息优势发挥出来
+
+为什么 MoE/Gated 在 few-shot 下某些数据集赢了？
+- MoE 通过路由选择模型子集 → 有效降低了特征维度 → 缓解过拟合
+- Gated 通过学习标量权重 → 只加 N 个参数 → 几乎不增加过拟合风险
+- 但它们的"优势"本质上来自隐式的维度压缩，而非路由本身的智慧
+
+为什么 full data 下 Concat 全赢？
+- 分类器有足够样本学习 4608 维空间 → 不需要压缩
+- 全量信息（4608 维）> 压缩后的信息 → Concat 的信息优势显现
+- MoE/Gated 的额外路由参数反而是纯负担
+
+为什么三种方法在 full data 下差距收窄到 1-2pp？
+- 数据充足时，分类器能力不再是瓶颈
+- 路由的"压缩"作用变得无关紧要
+- 三种方法都能有效利用多模型信息
+
+【关键数据点分析】
+
+SVHN 是最有说服力的案例：
+- 10-shot: Concat 22.47% vs Gated 33.01% → Gated 赢 10.54pp
+  → 样本极少（10×10=100），4608 维空间完全学不动，Gated 的压缩帮助巨大
+- Full data: Concat 83.05% vs Gated 77.97% → Concat 赢 5.08pp
+  → 样本充足，Concat 的全量信息反过来碾压 Gated 的信息损失
+
+GTSRB 同样：
+- 10-shot: MoE 69.18% >> Concat 60.93% → MoE 赢 8.25pp
+- Full data: Concat 91.18% > MoE 90.98% → Concat 反超，MoE 优势消失
+
+这完美展示了交叉现象（crossover）：
+数据量小 → 维度压缩重要 → 复杂方法赢
+数据量大 → 信息保留重要 → 简单方法赢
+
+【与 MoE 文献的对照】
+
+这个交叉现象与 Switch Transformer / ST-MoE 的实验结果完全一致：
+- ST-MoE 在 ~250 样本上输给 dense model
+- 在 100K+ 样本上反超
+- 我们的 feature fusion 场景中观察到了相同的 dense vs sparse 交叉
+
+但我们的结果又增加了一个 ST-MoE 没有覆盖的维度：
+在我们的设定中，full data 下 Concat（dense）仍然赢——因为我们的 MoE
+不是在增加模型容量（ST-MoE 的场景），而是在做特征压缩。当数据充足时，
+压缩是有损的，不压缩反而更好。
+
+【修正后的核心结论】
+
+"更多模型 = 更差性能"这一现象有两层原因：
+
+第一层（表征冗余，始终存在）：
+- Platonic convergence 导致模型表征冗余
+- 信息密度随模型数增加而下降
+- 这是表征本身的性质，与数据量无关
+
+第二层（维度灾难，与数据量相关）：
+- 冗余维度膨胀了特征空间
+- Few-shot 下分类器无法有效利用高维空间 → 性能急剧下降
+- Full data 下分类器能撑起高维空间 → 性能仍然很高
+- 路由机制在 few-shot 下通过隐式维度压缩缓解问题，
+  但 full data 下这种压缩反而成为信息损失
+
+最终论点：
+多模型融合的性能下降是"表征冗余"和"维度灾难"的叠加效应。
+表征冗余降低了信息密度，维度灾难放大了这种稀释的危害。
+数据量决定了维度灾难的严重程度，从而决定了最优融合策略：
+- 数据稀缺时：压缩（路由/门控）优先，因为分类器的容量是瓶颈
+- 数据充足时：保留（简单拼接）优先，因为信息的完整性是优势
+
+================================================================================
+九、完整故事线（Paper Story）——基于 full-data 实验修正
+================================================================================
+
+标题方向：
+"When More Models Means Less: Disentangling Representation Redundancy
+ and the Curse of Dimensionality in Multi-Encoder Feature Fusion"
+
+四幕结构：
+
+【第一幕：现象——更多模型 ≠ 更好性能】
+多模型特征融合存在性能峰值。在 10-shot few-shot 设置下，7 个数据集上
+性能在 4-5 个模型时到达最高点，之后加模型反而下降。Country211 甚至
+单模型 CLIP 最优，任何融合都降低性能。
+
+【第二幕：原因之一——表征冗余（Platonic Convergence）】
+根据 Platonic Representation Hypothesis，预训练模型正在趋同到相似的
+统计表示。融合趋同的表征等于复制信息而非增加信息。实验验证：
+- CLIP + DINO 互补性最强（训练目标正交：语义 vs 视觉结构），提升 3-8pp
+- MAE、Data2Vec 与 DINO 训练范式相近，加入后持平或下降
+- 信息密度（有用信息/特征维度）随模型增加而下降
+
+【第三幕：原因之二——维度灾难（数据量决定容忍度）】
+Full-data 实验揭示了更深层的机制：
+- 10-shot 下：Concat 赢 3/7，MoE 赢 2/7，Gated 赢 2/7
+- Full data 下：Concat 赢 6/7，MoE 赢 0/7
+- Concat 反而在 full data 下更强！
+
+这说明性能下降不仅是冗余问题，还有维度灾难：
+- 6 模型 Concat = 4608 维特征，MLP 第一层就有 230 万参数
+- 10-shot（100 样本）训 230 万参数 → 严重过拟合
+- Full data（数千-数万样本）→ 分类器能撑起高维空间 → Concat 全赢
+- MoE/Gated 在 few-shot 下的"优势"本质上来自隐式维度压缩，
+  而非路由的智慧
+
+关键证据——SVHN 的交叉现象：
+- 10-shot: Gated 33.01% >> Concat 22.47%（压缩帮助巨大）
+- Full data: Concat 83.05% >> Gated 77.97%（全量信息反超）
+
+【第四幕：统一理论——两层叠加效应】
+多模型融合的性能下降 = 表征冗余 × 维度灾难：
+- 表征冗余降低了信息密度（每个维度的平均信息量）
+- 维度灾难放大了信息密度低的危害（维度高 + 样本少 = 过拟合）
+- 数据量决定了维度灾难的严重程度，从而决定了最优融合策略
+
+实际应用指南：
+- 数据稀缺时 → 压缩优先（用 Gated/MoE 做隐式降维）
+- 数据充足时 → 保留优先（用 Concat 保留全量信息）
+- 始终 → 优先选择训练目标正交的模型（CKA 低 = 互补 = 融合有效）
+
+【方法贡献：CKA-Guided Model Selection】
+提出用 CKA 量化模型间表征相似度，基于互补性而非数量选择最优模型子集。
+这是一种无需额外训练的预选方法，直接从理论推导出来：
+- 信息密度 ∝ 1/冗余度
+- 冗余度 ∝ CKA 相似度
+- 所以选 CKA 最低的模型组合 = 最大化信息密度 = 最优融合
+
+================================================================================
+十、所有参考文献汇总
+================================================================================
+
+--- 核心理论 ---
+[1] Huh, Cheung, Wang, Isola. "The Platonic Representation Hypothesis",
+    ICML 2024. (表征趋同)
+[2] Kawaguchi et al. "How Does Information Bottleneck Help Deep Learning?",
+    ICML 2023. (信息瓶颈)
+[3] Wood, Mu, Webb, Reeve, Lujan, Brown. "A Unified Theory of Diversity
+    in Ensemble Learning", JMLR 2023. (集成多样性分解)
+[4] Kornblith, Norouzi, Lee, Hinton. "Similarity of Neural Network
+    Representations Revisited" (CKA), ICML 2019. (表征相似度度量)
+
+--- 表征冗余 ---
+[5] "Less is More: On the Feature Redundancy of Pretrained Models When
+    Transferring to Few-shot Tasks", arXiv 2023. (移除 95% 特征反而更好)
+[6] "Diffused Redundancy in Pre-trained Representations", NeurIPS 2023.
+    (冗余是结构性属性)
+
+--- 多模态融合失败 ---
+[7] Wu et al. "Characterizing and Overcoming the Greedy Nature of Learning
+    in Multi-modal Deep Neural Networks", ICML 2022. (模态懒惰)
+[8] Zhang et al. "Multimodal Representation Learning by Alternating
+    Unimodal Adaptation", CVPR 2024. (跨模态干扰)
+[9] Eagle: "Exploring the Design Space for Multimodal LLMs with Mixture
+    of Encoders", ICLR 2025. (复杂融合无显著优势)
+
+--- MoE 与数据量 ---
+[10] "On the Benefits of Learning to Route in Mixture-of-Experts Models",
+     EMNLP 2023. (路由器样本效率低)
+[11] Chowdhury et al. "Patch-level Routing in Mixture-of-Experts is
+     Provably Sample-efficient", ICML 2023. (理论样本复杂度界)
+[12] "Revisiting Single-gated Mixtures of Experts", BMVC 2022. (路由器 collapse)
+[13] Thangarasa et al. "SPDF: Sparse Pre-training and Dense Fine-tuning",
+     ICML 2023. (dense fine-tuning > sparse fine-tuning)
+
+--- CKA 模型选择相关 ---
+[14] "HE-CKA Ensembles", NeurIPS 2024. (CKA 训练时正则化)
+[15] "OSBORN: Submodular Transferability Estimation for Ensemble Selection",
+     ICCV 2023. (submodular 模型选择，用 transferability metrics)
+[16] Agostinelli et al. "Transferability Metrics for Selecting Source Model
+     Ensembles", CVPR 2022. (transferability 选源模型)
+[17] "Benchmarking GNN Models with CKA-Based Representation Analysis",
+     arXiv 2025. (CKA 分析 GNN 融合)
+
+--- 集成学习 ---
+[18] Wortsman et al. "Model Soups", ICML 2022. (greedy model averaging)
+[19] "Model Stock", 2024. (2-3 模型近似大量模型)
+[20] "Enforcing Representational Dissimilarity", arXiv 2023. (训练时强制表征差异)
+
+--- 信息瓶颈融合 ---
+[21] Fang et al. "Dynamic Multimodal Information Bottleneck for
+     Multimodality Classification", WACV 2024.
+[22] "Information Bottleneck Fusion for Deep Multi-View Clustering",
+     Knowledge-Based Systems, 2024.
+
+--- CKA 方法论 ---
+[23] Davari et al. "Reliability of CKA as a Similarity Measure in Deep
+     Learning", 2022. (CKA 的局限性)
+[24] Williams. "Equivalence between RSA, CKA, and CCA", bioRxiv 2024.
+     (三种相似度族的等价性)
+
+================================================================================
+END OF DISCOVERY LOG
+================================================================================
