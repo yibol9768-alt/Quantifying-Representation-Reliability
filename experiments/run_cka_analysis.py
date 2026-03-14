@@ -42,15 +42,32 @@ def extract_features(
     dataloader,
     model_dir: str,
     device: str,
+    use_patches: bool = True,
 ) -> torch.Tensor:
-    """Extract features from a single model on the full dataset."""
+    """Extract features from a single model on the full dataset.
+
+    Args:
+        use_patches: If True, extract last-layer patch tokens and flatten
+            to [N, num_patches*dim] for richer CKA computation.
+            If False, use pooled [CLS] output [N, dim].
+    """
     extractor = FeatureExtractor(model_type=model_type, model_dir=model_dir)
     extractor.eval().to(device)
 
     all_features = []
     for images, _ in dataloader:
         images = images.to(device)
-        feat = extractor(images)  # [B, dim]
+        if use_patches:
+            tokens = extractor.extract_last_tokens(images)
+            # patches: [B, num_patches, dim] -> flatten to [B, num_patches*dim]
+            patches = tokens["patches"]
+            if patches.shape[1] == 0:
+                # Fallback: model has no patch tokens (unlikely)
+                feat = tokens["cls"]
+            else:
+                feat = patches.flatten(1)  # [B, num_patches * dim]
+        else:
+            feat = extractor(images)  # [B, dim]
         all_features.append(feat.cpu())
 
     extractor.to("cpu")
@@ -138,8 +155,15 @@ def main():
                         help="Starting model for greedy selection")
     parser.add_argument("--threshold", type=float, default=0.85,
                         help="CKA threshold for greedy selection")
-    parser.add_argument("--max_samples", type=int, default=0,
-                        help="Max samples per dataset for CKA (0=all)")
+    parser.add_argument("--max_samples", type=int, default=2000,
+                        help="Max samples per dataset for CKA (0=all). "
+                             "Default 2000 to manage memory with patch tokens.")
+    parser.add_argument("--use_patches", action="store_true", default=True,
+                        help="Use last-layer patch tokens instead of pooled output (default: True)")
+    parser.add_argument("--no_patches", dest="use_patches", action="store_false",
+                        help="Use pooled [CLS] output instead of patch tokens")
+    parser.add_argument("--pca_dim", type=int, default=256,
+                        help="PCA target dim for patch tokens before CKA (0=no PCA)")
     args = parser.parse_args()
 
     datasets = [d.strip() for d in args.datasets.split(",")]
@@ -151,6 +175,9 @@ def main():
     print(f"Datasets: {datasets}")
     print(f"Models: {models}")
     print(f"Device: {args.device}")
+    print(f"Feature type: {'patch tokens (last layer)' if args.use_patches else 'pooled [CLS]'}")
+    print(f"Max samples: {args.max_samples if args.max_samples > 0 else 'all'}")
+    print(f"PCA dim: {args.pca_dim if args.pca_dim > 0 else 'disabled'}")
     print(f"Output: {output_dir}")
     print()
 
@@ -171,21 +198,27 @@ def main():
 
         # Extract features per model
         features_dict = {}
+        subsample_indices = None  # shared across models for consistency
         for model_name in models:
             print(f"  Extracting features: {model_name}...", end=" ", flush=True)
-            feat = extract_features(model_name, train_loader, args.model_dir, args.device)
+            feat = extract_features(
+                model_name, train_loader, args.model_dir, args.device,
+                use_patches=args.use_patches,
+            )
 
-            # Subsample if requested
+            # Subsample (same indices for all models)
             if args.max_samples > 0 and feat.shape[0] > args.max_samples:
-                indices = torch.randperm(feat.shape[0])[:args.max_samples]
-                feat = feat[indices]
+                if subsample_indices is None:
+                    subsample_indices = torch.randperm(feat.shape[0])[:args.max_samples]
+                feat = feat[subsample_indices]
 
             features_dict[model_name] = feat
             print(f"shape={feat.shape}")
 
         # Compute CKA matrix
-        print(f"  Computing CKA matrix...")
-        model_names, cka_matrix = compute_cka_matrix(features_dict)
+        pca_dim = args.pca_dim if args.pca_dim > 0 else None
+        print(f"  Computing CKA matrix (PCA dim={pca_dim})...")
+        model_names, cka_matrix = compute_cka_matrix(features_dict, pca_dim=pca_dim)
         all_cka_matrices[dataset] = cka_matrix
 
         # Save CSV
@@ -316,7 +349,7 @@ def main():
         for j in range(i + 1, n_models):
             vals = [all_cka_matrices[d][i, j] for d in datasets]
             var = np.var(vals)
-            if var > 0.005:  # only report notable variance
+            if var > 0.001:  # report notable variance
                 lines.append(f"  {models[i]} - {models[j]}: var={var:.4f} "
                              f"(range: {min(vals):.3f}-{max(vals):.3f})")
 
