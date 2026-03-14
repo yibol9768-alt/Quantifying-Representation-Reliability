@@ -22,6 +22,7 @@ import torch
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from torch.utils.data import DataLoader, Subset
 
 # Add project root to path
 project_root = Path(__file__).resolve().parent.parent
@@ -164,6 +165,8 @@ def main():
                         help="Use pooled [CLS] output instead of patch tokens")
     parser.add_argument("--pca_dim", type=int, default=256,
                         help="PCA target dim for patch tokens before CKA (0=no PCA)")
+    parser.add_argument("--sample_seed", type=int, default=42,
+                        help="Random seed for dataset subsampling when --max_samples > 0")
     args = parser.parse_args()
 
     datasets = [d.strip() for d in args.datasets.split(",")]
@@ -196,21 +199,28 @@ def main():
             model_type="mae",  # transforms don't matter much for CKA
         )
 
+        # Subsample at the dataset level before feature extraction to avoid
+        # materializing huge patch-token tensors for the full training set.
+        if args.max_samples > 0 and len(train_loader.dataset) > args.max_samples:
+            generator = torch.Generator().manual_seed(args.sample_seed)
+            subset_indices = torch.randperm(len(train_loader.dataset), generator=generator)[:args.max_samples]
+            train_loader = DataLoader(
+                Subset(train_loader.dataset, subset_indices.tolist()),
+                batch_size=args.batch_size,
+                shuffle=False,
+                num_workers=args.num_workers,
+                pin_memory=True,
+            )
+            print(f"  Using shared subset: {args.max_samples} samples")
+
         # Extract features per model
         features_dict = {}
-        subsample_indices = None  # shared across models for consistency
         for model_name in models:
             print(f"  Extracting features: {model_name}...", end=" ", flush=True)
             feat = extract_features(
                 model_name, train_loader, args.model_dir, args.device,
                 use_patches=args.use_patches,
             )
-
-            # Subsample (same indices for all models)
-            if args.max_samples > 0 and feat.shape[0] > args.max_samples:
-                if subsample_indices is None:
-                    subsample_indices = torch.randperm(feat.shape[0])[:args.max_samples]
-                feat = feat[subsample_indices]
 
             features_dict[model_name] = feat
             print(f"shape={feat.shape}")
