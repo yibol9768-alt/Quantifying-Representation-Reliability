@@ -59,7 +59,7 @@ class FeatureClassifier(nn.Module):
         super().__init__()
 
         # Feature extractor
-        from .extractors import get_extractor
+        from .fusion import get_extractor
         self.extractor = get_extractor(model_type)
 
         # Classifier
