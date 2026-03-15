@@ -1,0 +1,62 @@
+LogME-based Training-Free Relevance for MUMS — 改动说明
+======================================================
+
+目的：
+  用 LogME（ICML 2021）替代单模型分类器准确率作为 MUMS 的 R(m,T)。
+  只需一次前向传播 + 贝叶斯线性模型的 log 边际似然，几分钟即可得到
+  每个模型的任务相关性分数，无需训练单模型分类器。
+
+------------------------------------------------------
+新增文件
+------------------------------------------------------
+
+1. src/analysis/logme.py
+   - logme_score(features, labels): 分类任务入口
+     · labels 转 one-hot [N, C]，对每列调用 _evidence_regression，取平均
+   - _evidence_regression(U, S2, y, N): 核心算法
+     · SVD 分解后固定点迭代求最优 alpha, beta
+     · 返回 log evidence（标量）
+   - 纯 numpy 实现，无外部依赖
+
+2. experiments/run_logme_relevance.py
+   - 复用 FeatureExtractor.forward() 提取 pooled features [N, d]
+   - 复用 get_dataloaders() 加载数据（与 run_cka_analysis.py 相同模式）
+   - 子采样 max_samples=2000，seed=42
+   - 对每个 dataset × model 计算 LogME 分数
+   - 输出 logme_scores.json: {dataset: {model: score}}
+
+------------------------------------------------------
+修改文件
+------------------------------------------------------
+
+3. experiments/run_joint_selection.py
+   - 新增 --logme_dir 参数
+   - --results_dir 改为可选（二选一：--results_dir 或 --logme_dir）
+   - 新增 load_logme_scores(logme_dir) 函数，读取 logme_scores.json
+   - 分支逻辑：logme_dir 存在时用 LogME 分数，否则用单模型准确率
+   - 下游 normalize_relevance() + joint_greedy_selection() 完全不变
+     （min-max 正规化对负数同样有效）
+
+------------------------------------------------------
+未修改文件
+------------------------------------------------------
+
+- src/analysis/joint_selection.py — normalize_relevance() 对 LogME 分数同样有效
+- src/models/extractor.py — 直接复用 forward() 方法
+
+------------------------------------------------------
+使用方式
+------------------------------------------------------
+
+# 计算 LogME 分数
+python experiments/run_logme_relevance.py \
+    --datasets stl10,gtsrb,svhn,pets,eurosat,dtd,country211 \
+    --models clip,dino,mae,siglip,convnext,data2vec \
+    --model_dir ./models --data_dir ./data \
+    --output_dir ./results/logme --device cuda:0
+
+# 用 LogME 做 joint selection
+python experiments/run_joint_selection.py \
+    --cka_dir result/cka_patch_pca_full_fix_20260314_220955 \
+    --logme_dir results/logme \
+    --output_dir result/joint_selection_logme

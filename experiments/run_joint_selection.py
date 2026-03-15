@@ -1,19 +1,26 @@
 #!/usr/bin/env python3
 """Joint Diversity × Relevance Model Selection Analysis.
 
-Reads CKA matrices and single-model accuracies, then computes joint-selected
-orderings for each dataset under various (α, β) settings.
+Reads CKA matrices and single-model relevance scores (either single-model
+accuracies or LogME scores), then computes joint-selected orderings for each
+dataset under various (α, β) settings.
 
 Outputs:
     - joint_selection_results.json: all orderings and traces
     - joint_ordering_comparison.txt: summary table for quick inspection
     - Per-dataset ordering tables
 
-Usage:
+Usage (with single-model accuracies):
     python experiments/run_joint_selection.py \
         --cka_dir result/cka_patch_pca_full_fix_20260314_220955 \
         --results_dir /path/to/storage/results \
         --output_dir result/joint_selection
+
+Usage (with LogME scores):
+    python experiments/run_joint_selection.py \
+        --cka_dir result/cka_patch_pca_full_fix_20260314_220955 \
+        --logme_dir results/logme \
+        --output_dir result/joint_selection_logme
 """
 
 import argparse
@@ -40,6 +47,21 @@ MODELS = ["clip", "dino", "mae", "siglip", "convnext", "data2vec"]
 DATASETS = ["stl10", "pets", "eurosat", "dtd", "gtsrb", "svhn", "country211"]
 
 ORIGINAL_ORDER = ["clip", "dino", "mae", "siglip", "convnext", "data2vec"]
+
+
+def load_logme_scores(logme_dir: str) -> dict:
+    """Load LogME scores from logme_scores.json.
+
+    Returns:
+        {dataset: {model: score}}
+    """
+    json_path = os.path.join(logme_dir, "logme_scores.json")
+    if not os.path.exists(json_path):
+        print(f"  Warning: {json_path} not found")
+        return {}
+    with open(json_path) as f:
+        scores = json.load(f)
+    return scores
 
 
 def load_cka_matrices(cka_dir: str) -> dict:
@@ -120,8 +142,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--cka_dir", type=str, required=True,
                         help="Directory with CKA CSV matrices")
-    parser.add_argument("--results_dir", type=str, required=True,
+    parser.add_argument("--results_dir", type=str, default=None,
                         help="Directory with single-model result JSONs")
+    parser.add_argument("--logme_dir", type=str, default=None,
+                        help="Directory with logme_scores.json (alternative to --results_dir)")
     parser.add_argument("--output_dir", type=str, default="result/joint_selection")
     parser.add_argument("--alpha", type=float, nargs="+",
                         default=[0.0, 0.5, 1.0, 1.5, 2.0],
@@ -138,21 +162,37 @@ def main():
     cka_matrices, model_names = load_cka_matrices(args.cka_dir)
     print(f"  Loaded {len(cka_matrices)} datasets, models: {model_names}")
 
-    # Load single-model accuracies
-    print("\nCollecting single-model accuracies...")
-    single_accs = collect_single_model_accs(args.results_dir)
-    for ds in DATASETS:
-        if ds in single_accs and single_accs[ds]:
-            items = ", ".join(f"{m}={v:.2f}%" for m, v in sorted(single_accs[ds].items()))
-            print(f"  {ds}: {items}")
-        else:
-            print(f"  {ds}: NO DATA (need to run single-model baselines first)")
+    # Load relevance scores: LogME (training-free) or single-model accuracies
+    if args.logme_dir:
+        print("\nLoading LogME relevance scores...")
+        single_accs = load_logme_scores(args.logme_dir)
+        relevance_source = "logme"
+        for ds in DATASETS:
+            if ds in single_accs and single_accs[ds]:
+                items = ", ".join(f"{m}={v:.4f}" for m, v in sorted(single_accs[ds].items()))
+                print(f"  {ds}: {items}")
+            else:
+                print(f"  {ds}: NO DATA")
+    elif args.results_dir:
+        print("\nCollecting single-model accuracies...")
+        single_accs = collect_single_model_accs(args.results_dir)
+        relevance_source = "accuracy"
+        for ds in DATASETS:
+            if ds in single_accs and single_accs[ds]:
+                items = ", ".join(f"{m}={v:.2f}%" for m, v in sorted(single_accs[ds].items()))
+                print(f"  {ds}: {items}")
+            else:
+                print(f"  {ds}: NO DATA (need to run single-model baselines first)")
+    else:
+        print("\nERROR: Must provide either --results_dir or --logme_dir")
+        sys.exit(1)
 
     # Check if we have enough data
     datasets_ready = [ds for ds in DATASETS if ds in cka_matrices and len(single_accs.get(ds, {})) >= 4]
     if not datasets_ready:
-        print("\nERROR: No datasets have both CKA matrices and single-model accuracies.")
-        print("Run 'bash experiments/run_single_model.sh' first to get single-model baselines.")
+        print("\nERROR: No datasets have both CKA matrices and relevance scores.")
+        print("Either run 'bash experiments/run_single_model.sh' (--results_dir)")
+        print("or run 'python experiments/run_logme_relevance.py' (--logme_dir).")
         sys.exit(1)
 
     print(f"\nReady datasets: {datasets_ready}")
@@ -174,7 +214,12 @@ def main():
         print(f"  Raw accuracies: {raw_accs}")
         print(f"  Normalized relevance: { {m: f'{v:.3f}' for m,v in rel.items()} }")
 
-        ds_results = {"raw_acc": raw_accs, "normalized_relevance": rel, "orderings": {}}
+        ds_results = {
+            "relevance_source": relevance_source,
+            "raw_scores": raw_accs,
+            "normalized_relevance": rel,
+            "orderings": {},
+        }
 
         # Key orderings to compare
         key_orderings = {}
