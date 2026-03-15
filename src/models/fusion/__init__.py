@@ -26,6 +26,11 @@ from .routing import (
     MultiModelMoERouterExtractor,
     MultiModelAttentionRouterExtractor,
 )
+from .bottleneck import (
+    LinearBottleneckExtractor,
+    VIBBottleneckExtractor,
+    PCABottleneckExtractor,
+)
 from ..extractor import FeatureExtractor
 
 
@@ -111,6 +116,18 @@ def get_extractor(
         "attention_router": lambda: MultiModelAttentionRouterExtractor(
             model_types, proj_dim=fusion_kwargs.get("proj_dim", 512),
             num_heads=fusion_kwargs.get("attention_router_heads", 4), model_dir=model_dir,
+        ),
+        "linear_bottleneck": lambda: LinearBottleneckExtractor(
+            model_types, bottleneck_dim=fusion_kwargs.get("bottleneck_dim", 512),
+            model_dir=model_dir,
+        ),
+        "vib": lambda: VIBBottleneckExtractor(
+            model_types, bottleneck_dim=fusion_kwargs.get("bottleneck_dim", 512),
+            model_dir=model_dir,
+        ),
+        "pca_bottleneck": lambda: PCABottleneckExtractor(
+            model_types, bottleneck_dim=fusion_kwargs.get("bottleneck_dim", 512),
+            model_dir=model_dir,
         ),
     }
 
