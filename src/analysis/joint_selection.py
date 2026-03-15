@@ -18,22 +18,15 @@ Information-theoretic justification:
              ≈ I(f_m; Y) · [1 - I(f_m; f_S) / H(f_m)]
              = Relevance(m) · Novelty(m, S)
 
-Stopping criteria (Stage 2 — Subset Size Selection):
-    The greedy selection can be stopped early using one of three criteria:
-    1. Utility threshold: stop when U(m*|S) < τ
-    2. Marginal gain ratio: stop when U(m*|S) / U(m_1) < τ
-    3. Validation callback: stop when val_acc(S∪{m*}) ≤ val_acc(S)
-
 References:
     - Carbonell & Goldberg (1998), MMR: analogous additive form for IR
     - Kulesza & Taskar (2012), DPP: quality × diversity kernel decomposition
     - Nemhauser et al. (1978): greedy submodular maximization guarantees
-    - Caruana et al. (2004), Ensemble Selection from Libraries of Models
 """
 
 import json
 import numpy as np
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 
 def normalize_relevance(
@@ -104,17 +97,11 @@ def joint_greedy_selection(
     alpha: float = 1.0,
     beta: float = 1.0,
     start_model: Optional[str] = None,
-    stop: Optional[str] = None,
-    stop_threshold: float = 0.1,
-    val_callback: Optional[Callable[[List[str]], float]] = None,
-    patience: int = 1,
-) -> Tuple[List[str], List[dict], int]:
+) -> Tuple[List[str], List[dict]]:
     """Joint Diversity × Relevance greedy model selection.
 
     At each step, select the model with highest marginal utility:
         U(m | S) = R(m)^α · (1 - avg_CKA(m, S))^β
-
-    Supports optional early stopping to automatically determine subset size K*.
 
     Args:
         cka_matrix: [M, M] pairwise CKA matrix.
@@ -123,29 +110,10 @@ def joint_greedy_selection(
         alpha: relevance exponent.
         beta: diversity exponent.
         start_model: if None, start with highest-relevance model.
-        stop: stopping criterion, one of:
-            - None: no early stopping, rank all models (default).
-            - "utility": stop when U(m*|S) < stop_threshold.
-            - "gain_ratio": stop when U(m*|S) / U(step1) < stop_threshold.
-            - "validation": stop when val_callback(S∪{m*}) ≤ val_callback(S)
-              for `patience` consecutive steps. Requires val_callback.
-        stop_threshold: threshold for "utility" and "gain_ratio" stopping.
-            For "utility": absolute utility threshold (default 0.1).
-            For "gain_ratio": ratio relative to first step (default 0.1 = 10%).
-        val_callback: function that takes a list of model names and returns
-            a validation metric (higher is better). Required when stop="validation".
-        patience: number of consecutive non-improving steps before stopping
-            (only used with stop="validation", default 1).
 
     Returns:
-        (ordered_selection, trace, k_star) where:
-            ordered_selection: all models ranked by utility.
-            trace: per-step details including stopping info.
-            k_star: recommended subset size.
+        (ordered_selection, trace) where trace has per-step details.
     """
-    if stop == "validation" and val_callback is None:
-        raise ValueError("val_callback is required when stop='validation'")
-
     name_to_idx = {n: i for i, n in enumerate(model_names)}
 
     # Start model: highest relevance or specified
@@ -158,27 +126,15 @@ def joint_greedy_selection(
     selected = [start_model]
     remaining = [m for m in model_names if m != start_model]
 
-    first_utility = relevance.get(start_model, 0.0)
-
-    # Evaluate validation for initial model if using validation stopping
-    best_val_score = None
-    best_val_k = 1  # K at which best validation was seen
-    no_improve_count = 0
-    if stop == "validation":
-        best_val_score = val_callback(selected)
-
     trace = [{
         "step": 1,
         "model": start_model,
         "relevance": relevance.get(start_model, 0.0),
         "avg_cka_to_set": 0.0,
         "novelty": 1.0,
-        "utility": first_utility,
-        "stopped": False,
+        "utility": relevance.get(start_model, 0.0),
     }]
 
-    stopped = False
-    selected_k = None  # index where we stopped (None = no stop)
     step = 2
     while remaining:
         best_model = None
@@ -203,46 +159,6 @@ def joint_greedy_selection(
                     "novelty": 1.0 - avg_cka,
                 }
 
-        # Check stopping criteria before adding
-        should_stop = False
-        stop_reason = ""
-
-        if stop == "utility" and best_utility < stop_threshold:
-            should_stop = True
-            stop_reason = (
-                f"utility {best_utility:.4f} < threshold {stop_threshold}"
-            )
-
-        elif stop == "gain_ratio" and first_utility > 0:
-            ratio = best_utility / first_utility
-            if ratio < stop_threshold:
-                should_stop = True
-                stop_reason = (
-                    f"gain_ratio {ratio:.4f} < threshold {stop_threshold}"
-                )
-
-        elif stop == "validation" and not stopped:
-            # Tentatively add and evaluate
-            trial_set = selected + [best_model]
-            val_score = val_callback(trial_set)
-            if val_score > best_val_score:
-                best_val_score = val_score
-                best_val_k = len(trial_set)
-                no_improve_count = 0
-            else:
-                no_improve_count += 1
-                if no_improve_count >= patience:
-                    should_stop = True
-                    stop_reason = (
-                        f"no improvement for {patience} steps "
-                        f"(best={best_val_score:.4f} at K={best_val_k}, "
-                        f"current={val_score:.4f})"
-                    )
-
-        if should_stop and not stopped:
-            stopped = True
-            selected_k = len(selected)  # K* = current subset size
-
         selected.append(best_model)
         remaining.remove(best_model)
 
@@ -250,67 +166,11 @@ def joint_greedy_selection(
             "step": step,
             "model": best_model,
             "utility": best_utility,
-            "stopped": stopped,
-            "stop_reason": stop_reason if should_stop else "",
             **best_info,
         })
         step += 1
 
-    # Determine K*
-    if stop == "validation" and stopped:
-        # Use the K that achieved best validation score
-        k_star = best_val_k
-    elif stopped:
-        k_star = selected_k
-    else:
-        k_star = len(selected)
-
-    return selected, trace, k_star
-
-
-def select_subset(
-    cka_matrix: np.ndarray,
-    model_names: List[str],
-    relevance: Dict[str, float],
-    alpha: float = 1.0,
-    beta: float = 1.0,
-    stop: str = "gain_ratio",
-    stop_threshold: float = 0.1,
-    val_callback: Optional[Callable[[List[str]], float]] = None,
-    patience: int = 1,
-) -> Tuple[List[str], int, List[dict]]:
-    """Select optimal model subset using MUMS with automatic stopping.
-
-    Two-stage method:
-        Stage 1 (Ordering): Greedy selection by marginal utility.
-        Stage 2 (Selection): Stop when stopping criterion triggers.
-
-    Args:
-        cka_matrix: [M, M] pairwise CKA matrix.
-        model_names: model names corresponding to matrix indices.
-        relevance: {model: normalized_relevance} in [0, 1].
-        alpha: relevance exponent.
-        beta: diversity exponent.
-        stop: stopping criterion ("utility", "gain_ratio", or "validation").
-        stop_threshold: threshold value for the chosen criterion.
-        val_callback: validation function for stop="validation".
-        patience: consecutive non-improving steps before stopping
-            (only for stop="validation", default 1).
-
-    Returns:
-        (full_ordering, k_star, trace) where:
-            full_ordering: all models ranked by utility.
-            k_star: recommended subset size (use full_ordering[:k_star]).
-            trace: per-step details including stopping info.
-    """
-    full_ordering, trace, k_star = joint_greedy_selection(
-        cka_matrix, model_names, relevance,
-        alpha=alpha, beta=beta,
-        stop=stop, stop_threshold=stop_threshold,
-        val_callback=val_callback,
-        patience=patience,
-    )
-    return full_ordering, k_star, trace
+    return selected, trace
 
 
 def compare_orderings(
@@ -336,13 +196,13 @@ def compare_orderings(
 
     # Baselines
     # Relevance only
-    rel_order, _, _ = joint_greedy_selection(
+    rel_order, _ = joint_greedy_selection(
         cka_matrix, model_names, relevance, alpha=1.0, beta=0.0,
     )
     results["relevance_only"] = rel_order
 
     # Diversity only (CKA greedy from clip)
-    div_order, _, _ = joint_greedy_selection(
+    div_order, _ = joint_greedy_selection(
         cka_matrix, model_names, relevance, alpha=0.0, beta=1.0,
         start_model="clip",
     )
@@ -356,7 +216,7 @@ def compare_orderings(
     for alpha in alpha_values:
         for beta in beta_values:
             label = f"a{alpha:.1f}_b{beta:.1f}"
-            order, _, _ = joint_greedy_selection(
+            order, _ = joint_greedy_selection(
                 cka_matrix, model_names, relevance, alpha=alpha, beta=beta,
             )
             results[label] = order

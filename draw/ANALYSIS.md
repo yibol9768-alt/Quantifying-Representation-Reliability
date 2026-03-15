@@ -455,53 +455,11 @@ return S
 | 1 | 1 | 平衡 joint selection |
 | 2 | 1 | relevance-biased |
 
-### Stage 2 — 自动子集大小选择 (K*)
-
-排序之后，需要决定"选几个模型"。三种可选停止准则：
-
-| 准则 | 方法 | 需要验证集？ |
-|------|------|------------|
-| Utility 阈值 | U(m*\|S) < τ → 停 | 否 |
-| Gain Ratio | U(m*\|S)/U(step1) < τ → 停 | 否 |
-| 验证集早停 | val_acc 连续 patience 步不升 → 停 | 是 |
-
-验证集早停最可靠，在 7 个数据集上准确率 86%（6/7 完全命中，唯一错误仅损失 0.03pp）。
-
-**完整两阶段算法：**
-
-```
-Stage 1 — Ordering:
-  S ← {argmax_m R(m, T)}
-  while M \ S ≠ ∅:
-      m* ← argmax_{m ∉ S} R(m)^α · (1 - avg_CKA(m, S))^β
-      S ← S ∪ {m*}
-
-Stage 2 — Selection:
-  best_k ← 1
-  for k = 2 to |S|:
-      if val_acc(S[:k]) > best_acc:
-          best_k ← k
-      elif no improvement for patience steps:
-          break
-  return S[:best_k]
-```
-
 ### 实验结果（已完成）
 
 1. **单模型基线**：6 模型 × 7 数据集独立训练 → R(m,T) 矩阵
 2. **Joint Ordering 计算**：(α,β) 网格搜索 + 3 种顺序对比
 3. **Scaling 验证**：original vs diversity_only vs joint，Concat 融合，full-data
-4. **子集选择验证**：validation + patience=2，6/7 数据集完全命中最优 K*
-
-| 数据集 | 推荐 K* | 实际最优 K | 推荐子集 |
-|--------|--------|-----------|---------|
-| Country211 | 1 | 1 | clip |
-| GTSRB | 4 | 4 | siglip+clip+convnext+dino |
-| Pets | 4 | 4 | dino+clip+siglip+convnext |
-| SVHN | 6 | 6 | 全部 |
-| EuroSAT | 6 | 6 | 全部 |
-| DTD | 6 | 6 | 全部 |
-| STL10 | 6 | 5 | 全部（损失仅 0.03pp） |
 
 脚本：`experiments/run_single_model.sh` → `experiments/run_joint_selection.py` → auto-generated `run_joint_scaling.sh`
 
