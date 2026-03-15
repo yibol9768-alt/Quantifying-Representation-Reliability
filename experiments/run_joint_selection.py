@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.analysis.joint_selection import (
     normalize_relevance,
     joint_greedy_selection,
+    select_subset,
     compare_orderings,
     compute_cumulative_scores,
 )
@@ -84,8 +85,8 @@ def collect_single_model_accs(results_dir: str) -> dict:
             with open(json_file) as f:
                 data = json.load(f)
             cfg = data.get("config", {})
-            dataset = cfg.get("dataset", "")
-            model = cfg.get("model_type", "")
+            dataset = cfg.get("dataset", data.get("dataset", ""))
+            model = cfg.get("model_type") or cfg.get("model") or data.get("model", "")
 
             # Skip fusion results
             if model == "fusion":
@@ -96,11 +97,17 @@ def collect_single_model_accs(results_dir: str) -> dict:
                 continue
 
             # Check it's full-data (not few-shot)
-            fewshot = cfg.get("fewshot", True)
+            if "disable_fewshot" in cfg:
+                fewshot = not bool(cfg.get("disable_fewshot"))
+            else:
+                fewshot = cfg.get("fewshot", True)
             if fewshot:
                 continue
 
-            best_acc = data.get("best_accuracy", 0.0)
+            summary = data.get("summary", {})
+            best_acc = data.get("best_accuracy")
+            if best_acc is None:
+                best_acc = summary.get("best_acc", 0.0)
             # Keep the best across seeds/runs
             if model not in accs[dataset] or best_acc > accs[dataset][model]:
                 accs[dataset][model] = best_acc
@@ -123,6 +130,17 @@ def main():
     parser.add_argument("--beta", type=float, nargs="+",
                         default=[0.0, 0.5, 1.0, 1.5, 2.0],
                         help="Diversity exponent values to sweep")
+    parser.add_argument("--stop", type=str, default=None,
+                        choices=["utility", "gain_ratio", None],
+                        help="Stopping criterion for subset size selection. "
+                             "None=rank all models (default), "
+                             "utility=stop when U<threshold, "
+                             "gain_ratio=stop when U/U_first<threshold")
+    parser.add_argument("--stop_threshold", type=float, default=0.1,
+                        help="Threshold for stopping criterion (default: 0.1)")
+    parser.add_argument("--patience", type=int, default=1,
+                        help="Consecutive non-improving steps before stopping "
+                             "(only for --stop=validation, default: 1)")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -177,39 +195,55 @@ def main():
         key_orderings["original"] = ORIGINAL_ORDER
 
         # 2. Pure diversity (CKA-only, from our previous experiment)
-        div_order, div_trace = joint_greedy_selection(
+        div_order, div_trace, _ = joint_greedy_selection(
             cka, model_names, rel, alpha=0.0, beta=1.0, start_model="clip",
         )
         key_orderings["diversity_only"] = div_order
         ds_results["orderings"]["diversity_only"] = {"order": div_order, "trace": div_trace}
 
         # 3. Pure relevance
-        rel_order, rel_trace = joint_greedy_selection(
+        rel_order, rel_trace, _ = joint_greedy_selection(
             cka, model_names, rel, alpha=1.0, beta=0.0,
         )
         key_orderings["relevance_only"] = rel_order
         ds_results["orderings"]["relevance_only"] = {"order": rel_order, "trace": rel_trace}
 
         # 4. Joint (α=1, β=1) — our proposed method
-        joint_order, joint_trace = joint_greedy_selection(
+        joint_order, joint_trace, _ = joint_greedy_selection(
             cka, model_names, rel, alpha=1.0, beta=1.0,
         )
         key_orderings["joint_a1_b1"] = joint_order
         ds_results["orderings"]["joint_a1_b1"] = {"order": joint_order, "trace": joint_trace}
 
         # 5. Joint (α=2, β=1) — relevance-biased
-        joint2_order, joint2_trace = joint_greedy_selection(
+        joint2_order, joint2_trace, _ = joint_greedy_selection(
             cka, model_names, rel, alpha=2.0, beta=1.0,
         )
         key_orderings["joint_a2_b1"] = joint2_order
         ds_results["orderings"]["joint_a2_b1"] = {"order": joint2_order, "trace": joint2_trace}
 
         # 6. Joint (α=1, β=2) — diversity-biased
-        joint3_order, joint3_trace = joint_greedy_selection(
+        joint3_order, joint3_trace, _ = joint_greedy_selection(
             cka, model_names, rel, alpha=1.0, beta=2.0,
         )
         key_orderings["joint_a1_b2"] = joint3_order
         ds_results["orderings"]["joint_a1_b2"] = {"order": joint3_order, "trace": joint3_trace}
+
+        # 7. Subset selection with stopping (if enabled)
+        if args.stop:
+            subset_order, subset_k, subset_trace = select_subset(
+                cka, model_names, rel, alpha=1.0, beta=1.0,
+                stop=args.stop, stop_threshold=args.stop_threshold,
+            )
+            key_orderings[f"subset_{args.stop}"] = subset_order[:subset_k]
+            ds_results["orderings"]["subset_selection"] = {
+                "order": subset_order,
+                "k_star": subset_k,
+                "recommended_subset": subset_order[:subset_k],
+                "stop": args.stop,
+                "stop_threshold": args.stop_threshold,
+                "trace": subset_trace,
+            }
 
         # Alpha-beta grid
         grid_results = {}
@@ -218,7 +252,7 @@ def main():
                 if a == 0.0 and b == 0.0:
                     continue
                 label = f"a{a:.1f}_b{b:.1f}"
-                order, trace = joint_greedy_selection(
+                order, trace, _ = joint_greedy_selection(
                     cka, model_names, rel, alpha=a, beta=b,
                 )
                 grid_results[label] = {"order": order, "trace": trace}
@@ -235,9 +269,17 @@ def main():
 
         # Print joint trace
         print(f"\n  Joint (α=1,β=1) trace:")
-        print(f"  {'Step':<5} {'Model':<10} {'Relevance':<10} {'Novelty':<10} {'Utility':<10}")
+        print(f"  {'Step':<5} {'Model':<10} {'Relevance':<10} {'Novelty':<10} {'Utility':<10} {'Stopped':<8}")
         for t in joint_trace:
-            print(f"  {t['step']:<5} {t['model']:<10} {t['relevance']:<10.3f} {t['novelty']:<10.3f} {t['utility']:<10.4f}")
+            stopped_mark = "  <<<" if t.get("stopped") else ""
+            print(f"  {t['step']:<5} {t['model']:<10} {t['relevance']:<10.3f} {t['novelty']:<10.3f} {t['utility']:<10.4f}{stopped_mark}")
+
+        # Print subset selection result if enabled
+        if args.stop:
+            subset_info = ds_results["orderings"]["subset_selection"]
+            print(f"\n  Subset selection (stop={args.stop}, τ={args.stop_threshold}):")
+            print(f"  K* = {subset_info['k_star']}")
+            print(f"  Recommended: {' + '.join(subset_info['recommended_subset'])}")
 
         summary_lines.append(f"\n{ds.upper()}")
         for label, order in key_orderings.items():

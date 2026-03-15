@@ -233,32 +233,88 @@
 
 CKA 准确度量了表征多样性，但**朴素的"选最不同的模型"策略行不通**。SVHN 是唯一例外——DINO 对数字识别的 relevance 为零，此时 diversity 主导选择，CKA 顺序反而赢了。
 
-### 方法论启示：需要 Diversity × Relevance 联合框架
-
-有效的模型选择需要同时优化：
-- **互补性**（CKA 低）→ 避免信息冗余
-- **任务相关性**（单模型精度高 / transferability score 高）→ 确保新增信息有用
-
-```
-Score(candidate) = α · Relevance(candidate) − β · Redundancy(candidate, selected_set)
-```
+### 方法论启示 → 已发展为 MUMS 框架（见实验六）
 
 ---
 
-## 六、核心发现（综合实验一~五）
+## 五(c)、实验六：MUMS — Marginal Utility-based Model Selection（已完成）
 
-### 发现 1：CLIP + DINO 仍是最佳融合起点（Scaling 实验确认）
+### 单模型基线（Relevance 数据）
 
-CKA 分析曾修正判断为"CLIP+MAE 最互补"。但 Scaling 实验五证明：**表征互补性最高 ≠ 融合效果最好**。
+| 数据集 | clip | dino | siglip | mae | convnext | data2vec | 最优模型 |
+|--------|------|------|--------|-----|----------|----------|---------|
+| STL10 | 94.92 | **97.67** | 93.31 | 80.54 | 91.34 | 33.10 | DINO |
+| Pets | 94.22 | **96.10** | 94.41 | 76.34 | 93.73 | 6.16 | DINO |
+| EuroSAT | 96.31 | **96.78** | 96.76 | 95.78 | 96.20 | 73.59 | DINO |
+| DTD | 77.82 | 81.17 | **82.61** | 65.53 | 71.49 | 5.85 | SigLIP |
+| GTSRB | 87.69 | 78.88 | **89.60** | 64.18 | 82.34 | 22.38 | SigLIP |
+| SVHN | 73.07 | 67.38 | **78.14** | 64.02 | 75.57 | 19.59 | SigLIP |
+| Country211 | **29.98** | 19.85 | 23.99 | 10.59 | 13.22 | 1.15 | CLIP |
 
-| 模型对 | CKA | 2 模型融合精度（7 数据集平均） | 评价 |
-|--------|-----|---------------------------|------|
-| CLIP+MAE | **0.07**（最互补） | 较低 | 多样但不够有用 |
-| CLIP+DINO | 0.24（中等互补） | **较高** | 多样性适中 + 高任务相关性 |
+**重要发现：CLIP 不是万能最优——在 4/7 数据集上 SigLIP 或 DINO 更强。**
 
-DINO 的优势不在于表征正交性，而在于其自监督蒸馏特征（纹理、空间结构、物体部件）对分类任务**直接有用**。MAE 的掩码重建特征虽然最独特，但对分类贡献有限。
+### Joint Ordering (α=1, β=1)
 
-唯一例外：SVHN（数字识别）上 DINO 是噪声，CKA 顺序反而更好。
+| 数据集 | Joint 顺序 |
+|--------|-----------|
+| STL10 | **dino** → clip → mae → siglip → convnext → data2vec |
+| Pets | **dino** → clip → siglip → convnext → mae → data2vec |
+| GTSRB | **siglip** → clip → convnext → dino → mae → data2vec |
+| SVHN | **siglip** → clip → convnext → mae → dino → data2vec |
+| Country211 | **clip** → siglip → dino → convnext → mae → data2vec |
+
+### Scaling 验证：Joint vs Original vs Diversity
+
+**SVHN（最大改进）：**
+
+| #models | Orig (clip→dino) | Div (clip→mae) | **Joint (siglip→clip)** | Δ(J-O) |
+|---------|-----------------|----------------|------------------------|---------|
+| 2 | 75.95 | 75.83 | **79.59** | **+3.64** |
+| 3 | 77.39 | 79.84 | **82.49** | **+5.10** |
+| 4 | 81.21 | 80.24 | **82.68** | +1.47 |
+| 6 | 83.00 | 82.94 | **83.08** | +0.08 |
+
+**GTSRB：**
+
+| #models | Orig | Div | **Joint** | Δ(J-O) |
+|---------|------|-----|-----------|---------|
+| 4 | 90.91 | 90.97 | **91.81** | **+0.90** |
+| 5 | **91.38** | 91.28 | 91.19 | -0.19 |
+
+**Country211：**
+
+| #models | Orig | Div | **Joint** | Δ(J-O) |
+|---------|------|-----|-----------|---------|
+| 2 | 27.64 | 28.40 | **28.83** | **+1.19** |
+
+### 汇总
+
+| 统计 | 实验五 (Div vs Orig) | **实验六 (Joint vs Orig)** |
+|------|--------------------|-----------------------|
+| 胜率 | 7/35 (20%) | **8/11 (73%)** |
+| 2-3 模型平均 Δ | -1.29pp | **+2.71pp** |
+
+**Joint 选择从根本上逆转了 CKA-only 选择的劣势**，验证了 Diversity × Relevance 乘法框架的有效性。
+
+---
+
+## 六、核心发现（综合实验一~六）
+
+### 发现 1：最优融合起点是任务自适应的（实验六修正）
+
+实验五曾确认"CLIP+DINO 是最佳起点"。实验六进一步修正：**最优起点取决于任务。**
+
+| 任务类型 | 最优起始模型 | 原因 |
+|---------|------------|------|
+| 自然图像分类 (STL10, Pets) | **DINO** | 自监督蒸馏 → 视觉结构特征 |
+| 特殊域分类 (GTSRB, SVHN, DTD) | **SigLIP** | WebLI 语言对齐 → 更强泛化 |
+| 地理语义分类 (Country211) | **CLIP** | 图文对齐 → 地理语义 |
+
+MUMS 框架通过 argmax R(m,T) 自动选择任务最优起点。
+
+### 发现 2：+MAE 对 GTSRB 是灾难性的
+
++MAE 在 GTSRB 上 full data 下仍然暴跌 **-10.11pp**。MAE 的 masked autoencoder 重建目标关注像素级低频信息，对需要精确图案识别的交通标志任务是有害表征。
 
 ### 发现 2：+MAE 对 GTSRB 是灾难性的
 
@@ -399,11 +455,53 @@ return S
 | 1 | 1 | 平衡 joint selection |
 | 2 | 1 | relevance-biased |
 
-### 实验设计（待运行）
+### Stage 2 — 自动子集大小选择 (K*)
+
+排序之后，需要决定"选几个模型"。三种可选停止准则：
+
+| 准则 | 方法 | 需要验证集？ |
+|------|------|------------|
+| Utility 阈值 | U(m*\|S) < τ → 停 | 否 |
+| Gain Ratio | U(m*\|S)/U(step1) < τ → 停 | 否 |
+| 验证集早停 | val_acc 连续 patience 步不升 → 停 | 是 |
+
+验证集早停最可靠，在 7 个数据集上准确率 86%（6/7 完全命中，唯一错误仅损失 0.03pp）。
+
+**完整两阶段算法：**
+
+```
+Stage 1 — Ordering:
+  S ← {argmax_m R(m, T)}
+  while M \ S ≠ ∅:
+      m* ← argmax_{m ∉ S} R(m)^α · (1 - avg_CKA(m, S))^β
+      S ← S ∪ {m*}
+
+Stage 2 — Selection:
+  best_k ← 1
+  for k = 2 to |S|:
+      if val_acc(S[:k]) > best_acc:
+          best_k ← k
+      elif no improvement for patience steps:
+          break
+  return S[:best_k]
+```
+
+### 实验结果（已完成）
 
 1. **单模型基线**：6 模型 × 7 数据集独立训练 → R(m,T) 矩阵
 2. **Joint Ordering 计算**：(α,β) 网格搜索 + 3 种顺序对比
 3. **Scaling 验证**：original vs diversity_only vs joint，Concat 融合，full-data
+4. **子集选择验证**：validation + patience=2，6/7 数据集完全命中最优 K*
+
+| 数据集 | 推荐 K* | 实际最优 K | 推荐子集 |
+|--------|--------|-----------|---------|
+| Country211 | 1 | 1 | clip |
+| GTSRB | 4 | 4 | siglip+clip+convnext+dino |
+| Pets | 4 | 4 | dino+clip+siglip+convnext |
+| SVHN | 6 | 6 | 全部 |
+| EuroSAT | 6 | 6 | 全部 |
+| DTD | 6 | 6 | 全部 |
+| STL10 | 6 | 5 | 全部（损失仅 0.03pp） |
 
 脚本：`experiments/run_single_model.sh` → `experiments/run_joint_selection.py` → auto-generated `run_joint_scaling.sh`
 
