@@ -30,7 +30,13 @@ sys.path.insert(0, str(project_root))
 
 from src.models.extractor import FeatureExtractor
 from src.data.dataset import get_dataloaders
-from src.analysis.cka import compute_cka_matrix
+from src.analysis.cka import (
+    compute_cka_matrix,
+    compute_class_conditional_cka_matrix,
+)
+from src.analysis.conditional_mi import (
+    compute_pairwise_class_conditional_mi_matrix,
+)
 from src.analysis.model_selection import (
     greedy_selection,
     max_diversity_selection,
@@ -44,19 +50,22 @@ def extract_features(
     model_dir: str,
     device: str,
     use_patches: bool = True,
-) -> torch.Tensor:
+    return_labels: bool = False,
+):
     """Extract features from a single model on the full dataset.
 
     Args:
         use_patches: If True, extract last-layer patch tokens and flatten
             to [N, num_patches*dim] for richer CKA computation.
             If False, use pooled [CLS] output [N, dim].
+        return_labels: If True, also return labels aligned with the features.
     """
     extractor = FeatureExtractor(model_type=model_type, model_dir=model_dir)
     extractor.eval().to(device)
 
     all_features = []
-    for images, _ in dataloader:
+    all_labels = []
+    for images, labels in dataloader:
         images = images.to(device)
         if use_patches:
             tokens = extractor.extract_last_tokens(images)
@@ -70,12 +79,17 @@ def extract_features(
         else:
             feat = extractor(images)  # [B, dim]
         all_features.append(feat.cpu())
+        if return_labels:
+            all_labels.append(labels.cpu())
 
     extractor.to("cpu")
     del extractor
     torch.cuda.empty_cache() if "cuda" in device else None
 
-    return torch.cat(all_features, dim=0)
+    features = torch.cat(all_features, dim=0)
+    if return_labels:
+        return features, torch.cat(all_labels, dim=0)
+    return features
 
 
 def save_cka_heatmap(cka_matrix, model_names, title, save_path):
@@ -102,7 +116,13 @@ def save_cka_heatmap(cka_matrix, model_names, title, save_path):
     plt.close()
 
 
-def save_combined_heatmap(all_matrices, model_names, datasets, save_path):
+def save_combined_heatmap(
+    all_matrices,
+    model_names,
+    datasets,
+    save_path,
+    suptitle: str = "CKA Similarity Matrices Across Datasets",
+):
     """Save a combined heatmap with all datasets in subplots."""
     n = len(datasets)
     cols = min(3, n)
@@ -134,7 +154,7 @@ def save_combined_heatmap(all_matrices, model_names, datasets, save_path):
     for idx in range(n, len(axes)):
         axes[idx].set_visible(False)
 
-    fig.suptitle("CKA Similarity Matrices Across Datasets", fontsize=16, fontweight="bold", y=1.02)
+    fig.suptitle(suptitle, fontsize=16, fontweight="bold", y=1.02)
     plt.tight_layout()
     plt.savefig(save_path, dpi=150, bbox_inches="tight")
     plt.close()
@@ -169,6 +189,20 @@ def main():
                         help="PCA target dim for patch tokens before CKA (0=no PCA)")
     parser.add_argument("--sample_seed", type=int, default=42,
                         help="Random seed for dataset subsampling when --max_samples > 0")
+    parser.add_argument("--compute_class_conditional", action="store_true",
+                        help="Also compute class-conditional CKA matrices as a "
+                             "label-conditioned similarity diagnostic")
+    parser.add_argument("--min_class_samples", type=int, default=2,
+                        help="Minimum samples per class for class-conditional CKA")
+    parser.add_argument("--compute_pairwise_cmi", action="store_true",
+                        help="Also compute pairwise class-conditional MI matrices "
+                             "using a PCA + Gaussian estimator")
+    parser.add_argument("--cmi_pca_dim", type=int, default=32,
+                        help="PCA target dim for pairwise conditional MI")
+    parser.add_argument("--cmi_min_class_samples", type=int, default=8,
+                        help="Minimum samples per class for pairwise conditional MI")
+    parser.add_argument("--cmi_reg", type=float, default=1e-3,
+                        help="Diagonal covariance regularization for pairwise conditional MI")
     args = parser.parse_args()
 
     datasets = [d.strip() for d in args.datasets.split(",")]
@@ -183,11 +217,15 @@ def main():
     print(f"Feature type: {'patch tokens (last layer)' if args.use_patches else 'pooled [CLS]'}")
     print(f"Max samples: {args.max_samples if args.max_samples > 0 else 'all'}")
     print(f"PCA dim: {args.pca_dim if args.pca_dim > 0 else 'disabled'}")
+    print(f"Class-conditional CKA: {'enabled' if args.compute_class_conditional else 'disabled'}")
+    print(f"Pairwise conditional MI: {'enabled' if args.compute_pairwise_cmi else 'disabled'}")
     print(f"Output: {output_dir}")
     print()
 
     # ---- Step 1: Extract features and compute CKA per dataset ----
     all_cka_matrices = {}
+    all_ccka_matrices = {}
+    all_pcmi_matrices = {}
 
     for dataset in datasets:
         print(f"--- Dataset: {dataset} ---")
@@ -201,28 +239,41 @@ def main():
             model_type="mae",  # transforms don't matter much for CKA
         )
 
+        # CKA requires sample-aligned features across models, so use a
+        # deterministic non-shuffled loader regardless of training defaults.
+        analysis_dataset = train_loader.dataset
+
         # Subsample at the dataset level before feature extraction to avoid
         # materializing huge patch-token tensors for the full training set.
-        if args.max_samples > 0 and len(train_loader.dataset) > args.max_samples:
+        if args.max_samples > 0 and len(analysis_dataset) > args.max_samples:
             generator = torch.Generator().manual_seed(args.sample_seed)
-            subset_indices = torch.randperm(len(train_loader.dataset), generator=generator)[:args.max_samples]
-            train_loader = DataLoader(
-                Subset(train_loader.dataset, subset_indices.tolist()),
-                batch_size=args.batch_size,
-                shuffle=False,
-                num_workers=args.num_workers,
-                pin_memory=True,
-            )
+            subset_indices = torch.randperm(len(analysis_dataset), generator=generator)[:args.max_samples]
+            analysis_dataset = Subset(analysis_dataset, subset_indices.tolist())
             print(f"  Using shared subset: {args.max_samples} samples")
+
+        train_loader = DataLoader(
+            analysis_dataset,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=args.num_workers,
+            pin_memory=True,
+        )
 
         # Extract features per model
         features_dict = {}
+        labels = None
         for model_name in models:
             print(f"  Extracting features: {model_name}...", end=" ", flush=True)
-            feat = extract_features(
-                model_name, train_loader, args.model_dir, args.device,
-                use_patches=args.use_patches,
-            )
+            if labels is None:
+                feat, labels = extract_features(
+                    model_name, train_loader, args.model_dir, args.device,
+                    use_patches=args.use_patches, return_labels=True,
+                )
+            else:
+                feat = extract_features(
+                    model_name, train_loader, args.model_dir, args.device,
+                    use_patches=args.use_patches,
+                )
 
             features_dict[model_name] = feat
             print(f"shape={feat.shape}")
@@ -248,16 +299,132 @@ def main():
         save_cka_heatmap(cka_matrix, model_names, f"CKA Similarity - {dataset.upper()}", heatmap_path)
         print(f"  Saved: {heatmap_path}")
 
+        if args.compute_class_conditional:
+            print(
+                "  Computing class-conditional CKA matrix "
+                f"(PCA dim={pca_dim}, min_class_samples={args.min_class_samples})..."
+            )
+            model_names, ccka_matrix, ccka_meta = compute_class_conditional_cka_matrix(
+                features_dict,
+                labels,
+                pca_dim=pca_dim,
+                min_class_samples=args.min_class_samples,
+            )
+            all_ccka_matrices[dataset] = ccka_matrix
+
+            ccka_csv_path = output_dir / f"ccka_matrix_{dataset}.csv"
+            header = "," + ",".join(model_names)
+            rows = []
+            for i, name in enumerate(model_names):
+                row = name + "," + ",".join(
+                    f"{ccka_matrix[i, j]:.4f}" for j in range(len(model_names))
+                )
+                rows.append(row)
+            ccka_csv_path.write_text(header + "\n" + "\n".join(rows) + "\n")
+            print(f"  Saved: {ccka_csv_path}")
+
+            ccka_meta_path = output_dir / f"ccka_meta_{dataset}.json"
+            ccka_meta_path.write_text(json.dumps(ccka_meta, indent=2) + "\n")
+            print(f"  Saved: {ccka_meta_path}")
+
+            ccka_heatmap_path = output_dir / f"ccka_heatmap_{dataset}.png"
+            save_cka_heatmap(
+                ccka_matrix,
+                model_names,
+                f"Class-Conditional CKA - {dataset.upper()}",
+                ccka_heatmap_path,
+            )
+            print(f"  Saved: {ccka_heatmap_path}")
+
+        if args.compute_pairwise_cmi:
+            cmi_pca_dim = args.cmi_pca_dim if args.cmi_pca_dim > 0 else None
+            print(
+                "  Computing pairwise conditional MI matrix "
+                f"(PCA dim={cmi_pca_dim}, min_class_samples={args.cmi_min_class_samples}, "
+                f"reg={args.cmi_reg})..."
+            )
+            model_names, pcmi_raw, pcmi_norm, pcmi_meta = compute_pairwise_class_conditional_mi_matrix(
+                features_dict,
+                labels,
+                pca_dim=cmi_pca_dim,
+                min_class_samples=args.cmi_min_class_samples,
+                reg=args.cmi_reg,
+            )
+            all_pcmi_matrices[dataset] = pcmi_norm
+
+            pcmi_raw_csv_path = output_dir / f"pcmi_matrix_{dataset}.csv"
+            header = "," + ",".join(model_names)
+            rows = []
+            for i, name in enumerate(model_names):
+                row = name + "," + ",".join(
+                    f"{pcmi_raw[i, j]:.6f}" for j in range(len(model_names))
+                )
+                rows.append(row)
+            pcmi_raw_csv_path.write_text(header + "\n" + "\n".join(rows) + "\n")
+            print(f"  Saved: {pcmi_raw_csv_path}")
+
+            pcmi_norm_csv_path = output_dir / f"pcmi_matrix_norm_{dataset}.csv"
+            rows = []
+            for i, name in enumerate(model_names):
+                row = name + "," + ",".join(
+                    f"{pcmi_norm[i, j]:.4f}" for j in range(len(model_names))
+                )
+                rows.append(row)
+            pcmi_norm_csv_path.write_text(header + "\n" + "\n".join(rows) + "\n")
+            print(f"  Saved: {pcmi_norm_csv_path}")
+
+            pcmi_meta_path = output_dir / f"pcmi_meta_{dataset}.json"
+            pcmi_meta_path.write_text(json.dumps(pcmi_meta, indent=2) + "\n")
+            print(f"  Saved: {pcmi_meta_path}")
+
+            pcmi_heatmap_path = output_dir / f"pcmi_heatmap_{dataset}.png"
+            save_cka_heatmap(
+                pcmi_norm,
+                model_names,
+                f"Normalized Pairwise Conditional MI - {dataset.upper()}",
+                pcmi_heatmap_path,
+            )
+            print(f"  Saved: {pcmi_heatmap_path}")
+
         # Free memory
         del features_dict
+        del labels
         torch.cuda.empty_cache() if "cuda" in args.device else None
         print()
 
     # ---- Step 2: Combined heatmap ----
     if len(datasets) > 1:
         combined_path = output_dir / "cka_heatmap_all.png"
-        save_combined_heatmap(all_cka_matrices, models, datasets, combined_path)
+        save_combined_heatmap(
+            all_cka_matrices,
+            models,
+            datasets,
+            combined_path,
+            suptitle="CKA Similarity Matrices Across Datasets",
+        )
         print(f"Saved combined heatmap: {combined_path}")
+
+    if args.compute_class_conditional and len(all_ccka_matrices) > 1:
+        combined_ccka_path = output_dir / "ccka_heatmap_all.png"
+        save_combined_heatmap(
+            all_ccka_matrices,
+            models,
+            datasets,
+            combined_ccka_path,
+            suptitle="Class-Conditional CKA Matrices Across Datasets",
+        )
+        print(f"Saved combined class-conditional heatmap: {combined_ccka_path}")
+
+    if args.compute_pairwise_cmi and len(all_pcmi_matrices) > 1:
+        combined_pcmi_path = output_dir / "pcmi_heatmap_all.png"
+        save_combined_heatmap(
+            all_pcmi_matrices,
+            models,
+            datasets,
+            combined_pcmi_path,
+            suptitle="Normalized Pairwise Conditional MI Across Datasets",
+        )
+        print(f"Saved combined pairwise conditional MI heatmap: {combined_pcmi_path}")
 
     # ---- Step 3: Model selection strategies ----
     print("\n=== Model Selection ===")

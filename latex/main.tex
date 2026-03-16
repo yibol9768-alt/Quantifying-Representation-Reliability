@@ -1,0 +1,395 @@
+\documentclass[UTF8,fontset=fandol]{ctexart}
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsthm}
+\usepackage{bm}
+\usepackage{hyperref}
+
+\newtheorem{theorem}{定理}
+\newtheorem{proposition}{命题}
+\newtheorem{corollary}{推论}
+\theoremstyle{remark}
+\newtheorem{remark}{说明}
+
+\title{多模型预训练特征融合的理论说明}
+\author{}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\section{问题设定}
+
+设预训练模型池为
+\[
+\mathcal M = \{m_1, \dots, m_M\}.
+\]
+每个模型 $m$ 对输入 $x \in \mathcal X$ 输出冻结特征
+\[
+f_m(x) \in \mathbb R^{d_m}.
+\]
+对任意子集 $S \subseteq \mathcal M$，定义拼接特征
+\[
+F_S(x) = \bigoplus_{m \in S} f_m(x), \qquad d_S = \sum_{m \in S} d_m.
+\]
+
+目标任务标签记为随机变量 $Y$。在目标训练集
+\[
+s = \{(x_i, y_i)\}_{i=1}^n \sim P^{\otimes n}
+\]
+上，我们只训练轻量分类头或轻量融合器，而预训练编码器保持冻结。
+
+本文主要回答两个问题：
+\begin{itemize}
+    \item 为什么更多模型在总体层面不会让 Bayes 最优变差，但在有限样本下却可能使准确率先上升后下降？
+    \item 为什么模型排序不能只看多样性，而必须同时考虑任务相关性与类条件修正项？
+\end{itemize}
+
+\section{总体层面：更多模型不会让 Bayes 最优变差}
+
+\begin{proposition}[Bayes 最优风险对特征扩充单调不增]
+定义子集 $S$ 上的 Bayes 风险
+\[
+R^\star(S) = \inf_g \Pr[g(F_S) \neq Y],
+\]
+其中 $g$ 在所有可测分类器上取下确界。若 $S \subseteq T$，则
+\[
+R^\star(T) \le R^\star(S).
+\]
+\end{proposition}
+
+\begin{proof}
+设 $\pi_S$ 是从 $F_T$ 到 $F_S$ 的坐标投影。对任意定义在 $F_S$ 上的分类器 $g$，都可构造定义在 $F_T$ 上的分类器
+\[
+\tilde g(F_T) = g(\pi_S(F_T)).
+\]
+因此，$T$ 上的分类器集合至少包含“忽略新增特征”的所有策略，于是
+\[
+\inf_h \Pr[h(F_T) \neq Y] \le \inf_g \Pr[g(F_S) \neq Y].
+\]
+命题得证。
+\end{proof}
+
+\begin{proposition}[互信息对特征扩充单调不减]
+若 $S \subseteq T$，则
+\[
+I(F_T; Y) = I(F_S; Y) + I(F_{T \setminus S}; Y \mid F_S) \ge I(F_S; Y).
+\]
+\end{proposition}
+
+\begin{proof}
+直接由互信息链式法则与条件互信息非负性得到。
+\end{proof}
+
+\begin{remark}
+上面两个结论说明：在无限样本、无限算力和足够强学习器的理想条件下，增加模型不会让最优可达风险变差，也不会减少可用标签信息。因此实验中出现的“加模型掉点”不可能来自总体信息真的减少，而只能来自有限样本学习代价。
+\end{remark}
+
+\section{有限样本层面：为什么更多模型不一定更好}
+
+\begin{theorem}[测试风险的精确分解]
+设 $h_{S,n}$ 是用 $n$ 个样本在子集 $S$ 上学到的实际分类器，其真实风险为
+\[
+R_n(S) \triangleq \Pr[h_{S,n}(F_S) \neq Y].
+\]
+定义 excess risk
+\[
+E_n(S) \triangleq R_n(S) - R^\star(S) \ge 0.
+\]
+考虑一条嵌套路径
+\[
+S_0 \subset S_1 \subset \cdots \subset S_K,
+\]
+其中每一步只新增一个模型。则对任意 $k \ge 1$，
+\[
+R_n(S_k) - R_n(S_{k-1})
+= \underbrace{E_n(S_k) - E_n(S_{k-1})}_{\text{有限样本/优化新增代价}}
+- \underbrace{\big(R^\star(S_{k-1}) - R^\star(S_k)\big)}_{\text{Bayes 收益}}.
+\]
+\end{theorem}
+
+\begin{proof}
+直接加减 $R^\star(S_k)$ 与 $R^\star(S_{k-1})$：
+\begin{align*}
+R_n(S_k) - R_n(S_{k-1})
+&= [R_n(S_k) - R^\star(S_k)] - [R_n(S_{k-1}) - R^\star(S_{k-1})] \\
+&\quad - [R^\star(S_{k-1}) - R^\star(S_k)].
+\end{align*}
+即得结论。
+\end{proof}
+
+\begin{corollary}[单步性能退化的充要条件]
+定义
+\[
+\delta_k^\star \triangleq R^\star(S_{k-1}) - R^\star(S_k) \ge 0,
+\qquad
+c_k \triangleq E_n(S_k) - E_n(S_{k-1}).
+\]
+则
+\[
+R_n(S_k) > R_n(S_{k-1})
+\quad\Longleftrightarrow\quad
+c_k > \delta_k^\star.
+\]
+\end{corollary}
+
+\begin{proof}
+由上一定理直接移项即可。
+\end{proof}
+
+\begin{corollary}[更多模型不一定更好]
+若某一步满足
+\[
+E_n(S_k) - E_n(S_{k-1}) > R^\star(S_{k-1}) - R^\star(S_k),
+\]
+则加入第 $k$ 个模型后测试风险上升，等价地，测试准确率下降。
+\end{corollary}
+
+\begin{remark}
+这给出了“更多模型不一定更好”的严格证明。严格可证的不是“模型越多必然越差”，而是：只要新增模型带来的有限样本代价超过它带来的 Bayes 收益，测试性能就会下降。
+\end{remark}
+
+\subsection{准确率为什么会先上升后下降}
+
+\begin{proposition}[附加条件下存在最优模型数]
+沿同一嵌套路径，若进一步满足
+\begin{enumerate}
+    \item $\delta_1^\star \ge \delta_2^\star \ge \cdots$，即边际 Bayes 收益递减；
+    \item $c_1 \le c_2 \le \cdots$，即边际有限样本代价递增；
+    \item 存在某个 $K$ 使得 $c_K > \delta_K^\star$。
+\end{enumerate}
+则存在阈值 $K^\star$，使得对所有 $k \le K^\star$，
+\[
+R_n(S_k) \le R_n(S_{k-1}),
+\]
+而对所有 $k > K^\star$，
+\[
+R_n(S_k) > R_n(S_{k-1}).
+\]
+等价地，测试准确率先不上降，随后开始下降，因此存在最优模型数。
+\end{proposition}
+
+\begin{proof}
+定义
+\[
+a_k \triangleq c_k - \delta_k^\star.
+\]
+由条件 1 和 2，$a_k$ 单调不减。由条件 3，存在某个 $K$ 使得 $a_K > 0$。定义
+\[
+K^\star = \max \{k : a_k \le 0\}.
+\]
+则对所有 $k \le K^\star$ 有 $a_k \le 0$，而对所有 $k > K^\star$ 有 $a_k > 0$。由前述精确分解
+\[
+R_n(S_k) - R_n(S_{k-1}) = a_k,
+\]
+即可得结论。
+\end{proof}
+
+\begin{remark}
+这里必须强调，“先升后降”不是无条件必然定理，而是在“边际收益递减、边际代价递增并最终跨越”的附加假设下成立。对于 few-shot 多模型融合，这些假设是合理的统计学习建模假设，但不是无条件真理。
+\end{remark}
+
+\subsection{为什么这些附加条件在 few-shot 下合理}
+
+在冻结编码器、仅训练轻量头部的设定中，新增模型通常同时导致：
+\begin{itemize}
+    \item 输入维度 $d_S$ 增长；
+    \item 分类头参数量增长；
+    \item 优化空间变大。
+\end{itemize}
+因此在样本量固定很小的情况下，$c_k$ 上升是自然的。另一方面，随着已选模型数增加，新增模型提供的独立标签信息逐渐饱和，因此 $\delta_k^\star$ 递减也是自然假设。
+
+若分类头第一层宽度固定为 $512$，每新增一个 $768$ 维模型，仅第一层就新增
+\[
+768 \times 512 = 393{,}216
+\]
+个权重。在 few-shot 下，这个复杂度增长会直接放大 $c_k$。这解释了为什么实验里常见的是“前几个模型有益，后面继续加模型开始掉点”。
+
+\section{我们的方法为什么不能只看多样性}
+
+\begin{proposition}[边际标签信息的精确分解]
+对候选模型 $m \notin S$，定义
+\[
+\Delta_{\mathrm{MI}}(m \mid S) \triangleq I(F_m; Y \mid F_S).
+\]
+则有恒等式
+\[
+I(F_m; Y \mid F_S)
+= I(F_m; Y) - I(F_m; F_S) + I(F_m; F_S \mid Y).
+\]
+\end{proposition}
+
+\begin{proof}
+对联合量 $(Y, F_S)$ 按两种顺序展开：
+\begin{align}
+I(F_m; Y, F_S) &= I(F_m; F_S) + I(F_m; Y \mid F_S), \\
+I(F_m; Y, F_S) &= I(F_m; Y) + I(F_m; F_S \mid Y).
+\end{align}
+两式相等，移项即可。
+\end{proof}
+
+\begin{remark}
+这个分解给出三个组成部分：
+\begin{itemize}
+    \item $I(F_m; Y)$：任务相关性；
+    \item $I(F_m; F_S)$：冗余；
+    \item $I(F_m; F_S \mid Y)$：类条件修正项。
+\end{itemize}
+因此，低冗余不是充分条件。候选模型必须既相关，又不过度冗余；如果存在类条件互补结构，第三项还会进一步修正边际收益。
+\end{remark}
+
+\section{从精确目标到可实现算法}
+
+\subsection{原始两项排序分数}
+
+理想上，第 $k$ 步应选择
+\[
+m_k^\star = \arg\max_{m \notin S_{k-1}} I(F_m; Y \mid F_{S_{k-1}}).
+\]
+但高维条件互信息很难直接稳健估计，因此原始方法只保留前两项的工程代理，构造两项排序分数
+\[
+U_{\mathrm{2term}}(m \mid S, T)
+= \widehat R(m, T)^\alpha \cdot \bigl(1 - \widehat D(m, S)\bigr)^\beta.
+\]
+其中：
+\begin{itemize}
+    \item $\widehat R(m, T)$ 是任务相关性的代理，可取单模型精度或 LogME；
+    \item $\widehat D(m, S)$ 是冗余代理，本文采用平均 CKA：
+    \[
+    \widehat D(m, S) = \frac{1}{|S|} \sum_{j \in S} \mathrm{CKA}(F_m, F_j).
+    \]
+\end{itemize}
+
+\begin{remark}
+这里乘法形式的含义不是“它精确等于条件互信息”，而是强调相关性和新颖性都是必要条件。任何一项接近零，候选模型都不应有高排序分数。
+\end{remark}
+
+\subsection{第三项为什么不能直接做 set-level 估计}
+
+理论上第三项是
+\[
+I(F_m; F_S \mid Y).
+\]
+问题在于 $F_S$ 是整个已选集合的拼接表示。随着 $|S|$ 增长，$F_S$ 维度快速上升，直接估计 set-level 条件互信息
+\[
+I(F_m; F_S \mid Y)
+\]
+在高维、有限样本条件下非常不稳定。因此，不能声称原始两项方法已经精确处理了第三项。
+
+\subsection{第三项的更稳处理：pairwise low-order approximation}
+
+借鉴 Brown 等人关于信息论特征选择的统一分析，可以用 pairwise 低阶近似替代 whole-set 的第三项，即用
+\[
+\widehat C(m, S)
+= \frac{1}{|S|} \sum_{j \in S} \widehat I(F_m; F_j \mid Y)
+\]
+近似类条件修正作用。于是得到三项评分
+\[
+\mathrm{Score}_{\mathrm{3term}}(m \mid S)
+= \widehat R(m) - \lambda \widehat D(m, S) + \eta \widehat C(m, S).
+\]
+
+本文在实现上进一步采用如下可计算近似：
+\begin{enumerate}
+    \item 先对每个模型特征做 PCA 降维；
+    \item 对每个类别 $y$ 假设类条件特征近似服从高斯分布；
+    \item 估计
+    \[
+    I(F_m; F_j \mid Y)
+    = \sum_y p(y) I(F_m; F_j \mid Y = y).
+    \]
+\end{enumerate}
+
+\begin{remark}
+因此，第三项当前的严谨说法应当是：我们没有直接估 set-level 的 $I(F_m; F_S \mid Y)$，而是使用 Brown 风格的 pairwise low-order approximation，并用 ``PCA + 类条件高斯'' 估计器对其进行近似实现。它不是无偏估计，也不是严格一致估计，而是一个有文献依据的可计算近似。
+\end{remark}
+
+\subsection{class-conditional CKA 的角色}
+
+如果进一步计算
+\[
+\widehat D_{\mathrm{cc}}(m, S)
+= \sum_y \hat p(y)\frac{1}{|S|}\sum_{j \in S}\mathrm{CKA}(F_m^{(y)}, F_j^{(y)}),
+\]
+那么这个量只能被看作标签条件相似性的诊断统计量，而不能被当作
+\[
+I(F_m; F_S \mid Y)
+\]
+或
+\[
+\frac{1}{|S|}\sum_{j \in S} I(F_m; F_j \mid Y)
+\]
+的互信息估计器。因此，ccCKA 只能用于补充分析，不能直接替代第三项本身。
+
+\section{为什么用 CKA 作为冗余代理是合理的}
+
+Kornblith 等人在 ICML 2019 证明：当表示维度大于样本数时，任何对可逆线性变换都不变的相似度统计量都会退化。其核心结论可写为如下命题。
+
+\begin{proposition}[改写自 Kornblith et al.\ 的高维退化结论]
+令 $X, Y \in \bm{R}^{n \times p}$ 且 $\mathrm{rank}(X) = \mathrm{rank}(Y) = n$。若相似度统计量 $s(\cdot, \cdot)$ 对第一自变量满足可逆线性变换不变性，即
+\[
+s(X, Z) = s(XA, Z)
+\]
+对任意可逆 $A \in \bm{R}^{p \times p}$ 都成立，则对任意 $Z$ 都有
+\[
+s(X, Z) = s(Y, Z).
+\]
+\end{proposition}
+
+\begin{proof}
+证明思路与 Kornblith 等人的补充材料一致：通过为 $X$ 与 $Y$ 分别补足零空间基，构造两个可逆矩阵 $X'$ 与 $Y'$，再令 $A = (X')^{-1}Y'$，即可得到 $XA = Y$，随后由可逆线性变换不变性推出结论。
+\end{proof}
+
+\begin{remark}
+这个结果说明，过强的不变性会使高维表示相似度退化。CKA 仅保持对正交变换和各向同性缩放的不变性，因此比 CCA 一类完全可逆不变的统计量更适合作为高维特征冗余的代理。不过仍需明确：CKA 只是冗余代理，不是互信息估计器。
+\end{remark}
+
+\section{哪些地方是严格证明，哪些地方只是带条件或近似}
+
+\paragraph{严格可证的部分}
+\begin{itemize}
+    \item Bayes 风险对特征扩充单调不增；
+    \item 互信息对特征扩充单调不减；
+    \item 测试风险的精确分解；
+    \item 单步性能退化的充要条件；
+    \item 边际标签信息的三项精确分解。
+\end{itemize}
+
+\paragraph{带条件成立的部分}
+\begin{itemize}
+    \item “准确率先上升后下降”需要附加假设：边际收益递减、边际代价递增并最终跨越；
+    \item “存在最优模型数”不是无条件普适定理，而是针对 few-shot 融合的合理结构假设下成立。
+\end{itemize}
+
+\paragraph{工程近似的部分}
+\begin{itemize}
+    \item $\widehat R$ 不是互信息本身，只是相关性的代理；
+    \item CKA 不是 $I(F_m; F_S)$ 的无偏估计，只是冗余代理；
+    \item 第三项采用 pairwise low-order approximation，而不是 set-level 条件互信息的直接估计；
+    \item PCA + 类条件高斯估计器是可计算近似，不是严格一致估计；
+    \item class-conditional CKA 只是探索性诊断，不能替代第三项。
+\end{itemize}
+
+\section{与相关文献的关系}
+
+\begin{itemize}
+    \item Tishby 的 Information Bottleneck 提供了“保留任务相关信息、压缩无关输入信息”的概念框架，但不宜单独作为本文“先升后降”的唯一证明主线。
+    \item Kawaguchi 等人在 ICML 2023 指出，在固定表示场景下，泛化差与 $I(X; Z \mid Y)$ 有关；这更适合作为解释为什么新增代价会变大的机制，而不是替代本文的风险分解证明。
+    \item Brown 等人在 JMLR 2012 给出了信息论特征选择的低阶近似框架，为本文把第三项改写为 pairwise conditional term 提供了直接依据。
+    \item Kornblith 等人在 ICML 2019 说明了为什么高维表示比较中需要谨慎选择相似度统计量，这为本文使用 CKA 作为冗余代理提供了方法论支撑。
+\end{itemize}
+
+\section{结论性表述}
+
+基于上述分析，本文最稳妥的理论表述可以写成：
+
+\begin{quote}
+对于冻结预训练编码器的多模型特征融合，增加模型在总体层面不会降低 Bayes 可达性能；然而在有限样本下，新增模型带来的统计估计代价与优化代价可能增长得快于其 Bayes 收益，从而导致测试准确率先上升后下降。对任一候选模型，其边际标签信息可被精确分解为任务相关性、与已选模型的冗余以及类条件修正三项。由于高维 set-level 条件互信息难以直接估计，本文将实现分成两层：原始两项排序负责建模“相关性 + 冗余”的主导部分，三项扩展分支则通过 Brown 风格的 pairwise low-order approximation 处理第三项。该理论既解释了“更多模型不一定更好”，也解释了为什么纯多样性排序会失败。
+\end{quote}
+
+\paragraph{参考文献说明}
+本文理论主线主要参考以下文献：Kornblith et al.\ (ICML 2019)、Kawaguchi et al.\ (ICML 2023)、Brown et al.\ (JMLR 2012) 以及 Information Bottleneck 相关工作。若后续需要扩展成正式论文版本，建议再统一补充为 BibTeX 引用。
+
+\end{document}

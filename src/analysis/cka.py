@@ -3,6 +3,12 @@
 Supports both feature-space (d < N) and kernel-space (d > N) computation.
 Includes optional PCA projection to handle the d >> N degeneracy problem
 when using flattened patch tokens.
+
+Also provides a class-conditional CKA variant that averages per-class CKA
+values. This is useful as a label-conditioned similarity diagnostic when one
+wants to inspect whether within-class representation alignment changes across
+model pairs, without claiming to estimate high-dimensional conditional mutual
+information.
 """
 
 import torch
@@ -75,6 +81,23 @@ def pca_reduce(X: torch.Tensor, n_components: int = 256) -> torch.Tensor:
     return U * S.unsqueeze(0)
 
 
+def _prepare_features(
+    features_dict: Dict[str, torch.Tensor],
+    pca_dim: Optional[int] = 256,
+) -> Tuple[list, Dict[str, torch.Tensor]]:
+    """Convert features to CPU float32 and apply optional PCA once per model."""
+    model_names = list(features_dict.keys())
+    features = {}
+    for name, feat in features_dict.items():
+        f = feat.float().cpu()
+        if pca_dim is not None and f.shape[1] > pca_dim:
+            orig_dim = f.shape[1]
+            f = pca_reduce(f, pca_dim)
+            print(f"    PCA: {name} {orig_dim} -> {f.shape[1]}")
+        features[name] = f
+    return model_names, features
+
+
 def compute_cka_matrix(
     features_dict: Dict[str, torch.Tensor],
     pca_dim: Optional[int] = 256,
@@ -91,19 +114,9 @@ def compute_cka_matrix(
     Returns:
         (model_names, cka_matrix) where cka_matrix is [M, M] numpy array.
     """
-    model_names = list(features_dict.keys())
+    model_names, features = _prepare_features(features_dict, pca_dim=pca_dim)
     n_models = len(model_names)
     cka_matrix = np.zeros((n_models, n_models))
-
-    # Prepare features: CPU float32, optional PCA
-    features = {}
-    for name, feat in features_dict.items():
-        f = feat.float().cpu()
-        if pca_dim is not None and f.shape[1] > pca_dim:
-            orig_dim = f.shape[1]
-            f = pca_reduce(f, pca_dim)
-            print(f"    PCA: {name} {orig_dim} -> {f.shape[1]}")
-        features[name] = f
 
     for i in range(n_models):
         cka_matrix[i, i] = 1.0
@@ -114,3 +127,94 @@ def compute_cka_matrix(
             print(f"    CKA({model_names[i]}, {model_names[j]}) = {cka_val:.4f}")
 
     return model_names, cka_matrix
+
+
+def compute_class_conditional_cka_matrix(
+    features_dict: Dict[str, torch.Tensor],
+    labels: torch.Tensor,
+    pca_dim: Optional[int] = 256,
+    min_class_samples: int = 2,
+) -> Tuple[list, np.ndarray, dict]:
+    """Compute class-conditional CKA by averaging per-class CKA values.
+
+    For discrete labels Y, this function computes a weighted class-wise average
+    E_y[ CKA(F_i^(y), F_j^(y)) ], where F^(y) denotes the subset of features
+    whose labels equal y. The weighting is empirical class frequency among
+    classes with enough samples.
+
+    Important: this is only a label-conditioned similarity diagnostic. It is
+    not an estimator of I(F_i; F_j | Y), nor should it be used as such in
+    theoretical claims.
+
+    Args:
+        features_dict: {model_name: [N, dim] tensor}. All tensors share labels.
+        labels: [N] integer labels aligned with feature rows.
+        pca_dim: Optional PCA dimension applied once per model before slicing.
+        min_class_samples: Minimum samples needed for a class to contribute.
+
+    Returns:
+        (model_names, ccka_matrix, metadata)
+    """
+    labels = labels.view(-1).cpu()
+    model_names, features = _prepare_features(features_dict, pca_dim=pca_dim)
+    n_models = len(model_names)
+    ccka_matrix = np.zeros((n_models, n_models))
+
+    if not features:
+        raise ValueError("features_dict must be non-empty")
+    n_samples = next(iter(features.values())).shape[0]
+    if labels.shape[0] != n_samples:
+        raise ValueError("labels must align with features")
+
+    labels_np = labels.numpy()
+    unique_labels, counts = np.unique(labels_np, return_counts=True)
+
+    class_indices = {}
+    skipped_classes = []
+    valid_class_counts = {}
+    for label, count in zip(unique_labels.tolist(), counts.tolist()):
+        if count < min_class_samples:
+            skipped_classes.append(int(label))
+            continue
+        idx = torch.from_numpy(np.where(labels_np == label)[0]).long()
+        class_indices[int(label)] = idx
+        valid_class_counts[int(label)] = int(count)
+
+    if not class_indices:
+        raise ValueError(
+            f"No classes have at least {min_class_samples} samples; "
+            "cannot compute class-conditional CKA."
+        )
+
+    total_weight = float(sum(valid_class_counts.values()))
+
+    for i in range(n_models):
+        ccka_matrix[i, i] = 1.0
+        for j in range(i + 1, n_models):
+            weighted_sum = 0.0
+            for label, idx in class_indices.items():
+                weight = valid_class_counts[label] / total_weight
+                cka_val = linear_CKA(
+                    features[model_names[i]].index_select(0, idx),
+                    features[model_names[j]].index_select(0, idx),
+                )
+                weighted_sum += weight * cka_val
+
+            ccka_matrix[i, j] = weighted_sum
+            ccka_matrix[j, i] = weighted_sum
+            print(
+                f"    ccCKA({model_names[i]}, {model_names[j]}) = "
+                f"{weighted_sum:.4f}"
+            )
+
+    metadata = {
+        "num_total_samples": int(n_samples),
+        "num_total_classes": int(len(unique_labels)),
+        "num_valid_classes": int(len(class_indices)),
+        "num_skipped_classes": int(len(skipped_classes)),
+        "valid_sample_coverage": total_weight / float(n_samples),
+        "min_class_samples": int(min_class_samples),
+        "valid_class_counts": valid_class_counts,
+        "skipped_classes": skipped_classes,
+    }
+    return model_names, ccka_matrix, metadata

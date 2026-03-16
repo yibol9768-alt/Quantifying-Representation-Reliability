@@ -13,6 +13,7 @@ Outputs:
 Usage (with single-model accuracies):
     python experiments/run_joint_selection.py \
         --cka_dir result/cka_patch_pca_full_fix_20260314_220955 \
+        --pcmi_dir result/cka_patch_pca_full_fix_20260314_220955 \
         --results_dir /path/to/storage/results \
         --output_dir result/joint_selection
 
@@ -38,6 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.analysis.joint_selection import (
     normalize_relevance,
     joint_greedy_selection,
+    conditional_joint_greedy_selection,
     compare_orderings,
     compute_cumulative_scores,
 )
@@ -84,6 +86,46 @@ def load_cka_matrices(cka_dir: str) -> dict:
             if model_names is None:
                 model_names = names
     return matrices, model_names
+
+
+def load_pairwise_conditional_mi_matrices(pcmi_dir: str) -> dict:
+    """Load per-dataset normalized pairwise conditional MI matrices from CSV."""
+    matrices = {}
+    model_names = None
+    for ds in DATASETS:
+        csv_path = os.path.join(pcmi_dir, f"pcmi_matrix_norm_{ds}.csv")
+        if not os.path.exists(csv_path):
+            print(f"  Warning: {csv_path} not found, skipping {ds}")
+            continue
+        with open(csv_path) as f:
+            reader = csv.reader(f)
+            header = next(reader)
+            names = header[1:]
+            data = []
+            for row in reader:
+                data.append([float(x) for x in row[1:]])
+            matrices[ds] = np.array(data)
+            if model_names is None:
+                model_names = names
+    return matrices, model_names
+
+
+def reorder_matrix(
+    matrix: np.ndarray,
+    source_names: list,
+    target_names: list,
+) -> np.ndarray:
+    """Reorder a square matrix from source_names order to target_names order."""
+    if source_names == target_names:
+        return matrix
+
+    name_to_idx = {name: idx for idx, name in enumerate(source_names)}
+    missing = [name for name in target_names if name not in name_to_idx]
+    if missing:
+        raise ValueError(f"Missing models in matrix order: {missing}")
+
+    order = [name_to_idx[name] for name in target_names]
+    return matrix[np.ix_(order, order)]
 
 
 def collect_single_model_accs(results_dir: str) -> dict:
@@ -146,6 +188,8 @@ def main():
                         help="Directory with single-model result JSONs")
     parser.add_argument("--logme_dir", type=str, default=None,
                         help="Directory with logme_scores.json (alternative to --results_dir)")
+    parser.add_argument("--pcmi_dir", type=str, default=None,
+                        help="Directory with normalized pairwise conditional MI CSV matrices")
     parser.add_argument("--output_dir", type=str, default="result/joint_selection")
     parser.add_argument("--alpha", type=float, nargs="+",
                         default=[0.0, 0.5, 1.0, 1.5, 2.0],
@@ -153,6 +197,10 @@ def main():
     parser.add_argument("--beta", type=float, nargs="+",
                         default=[0.0, 0.5, 1.0, 1.5, 2.0],
                         help="Diversity exponent values to sweep")
+    parser.add_argument("--lambda_red", type=float, default=1.0,
+                        help="Redundancy weight for the low-order three-term score")
+    parser.add_argument("--eta_cond", type=float, default=1.0,
+                        help="Conditional-term weight for the low-order three-term score")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -161,6 +209,13 @@ def main():
     print("Loading CKA matrices...")
     cka_matrices, model_names = load_cka_matrices(args.cka_dir)
     print(f"  Loaded {len(cka_matrices)} datasets, models: {model_names}")
+
+    pcmi_matrices = {}
+    pcmi_model_names = None
+    if args.pcmi_dir:
+        print("\nLoading normalized pairwise conditional MI matrices...")
+        pcmi_matrices, pcmi_model_names = load_pairwise_conditional_mi_matrices(args.pcmi_dir)
+        print(f"  Loaded {len(pcmi_matrices)} datasets, models: {pcmi_model_names}")
 
     # Load relevance scores: LogME (training-free) or single-model accuracies
     if args.logme_dir:
@@ -248,6 +303,24 @@ def main():
         key_orderings["joint_a1_b1"] = joint_order
         ds_results["orderings"]["joint_a1_b1"] = {"order": joint_order, "trace": joint_trace}
 
+        if ds in pcmi_matrices:
+            pcmi = reorder_matrix(pcmi_matrices[ds], pcmi_model_names, model_names)
+            cond_order, cond_trace = conditional_joint_greedy_selection(
+                cka,
+                pcmi,
+                model_names,
+                rel,
+                lambda_red=args.lambda_red,
+                eta_cond=args.eta_cond,
+            )
+            key_orderings["three_term"] = cond_order
+            ds_results["orderings"]["three_term"] = {
+                "order": cond_order,
+                "trace": cond_trace,
+                "lambda_red": args.lambda_red,
+                "eta_cond": args.eta_cond,
+            }
+
         # 5. Joint (α=2, β=1) — relevance-biased
         joint2_order, joint2_trace = joint_greedy_selection(
             cka, model_names, rel, alpha=2.0, beta=1.0,
@@ -290,6 +363,16 @@ def main():
         for t in joint_trace:
             print(f"  {t['step']:<5} {t['model']:<10} {t['relevance']:<10.3f} {t['novelty']:<10.3f} {t['utility']:<10.4f}")
 
+        if ds in pcmi_matrices:
+            print(f"\n  Three-term trace (lambda={args.lambda_red}, eta={args.eta_cond}):")
+            print(f"  {'Step':<5} {'Model':<10} {'Relevance':<10} {'AvgCKA':<10} {'AvgCond':<10} {'Utility':<10}")
+            for t in cond_trace:
+                print(
+                    f"  {t['step']:<5} {t['model']:<10} "
+                    f"{t['relevance']:<10.3f} {t['avg_cka_to_set']:<10.3f} "
+                    f"{t['avg_conditional_to_set']:<10.3f} {t['utility']:<10.4f}"
+                )
+
         summary_lines.append(f"\n{ds.upper()}")
         for label, order in key_orderings.items():
             summary_lines.append(f"  {label:<20} {' → '.join(order)}")
@@ -316,7 +399,7 @@ def _generate_scaling_script(all_results: dict, output_dir: str):
     script_lines = [
         '#!/bin/bash',
         '# Joint Selection Scaling Experiment (auto-generated)',
-        '# Compares: original / diversity_only / joint_a1_b1 orderings',
+        '# Compares: original / diversity_only / joint_a1_b1 / three_term orderings when available',
         '#',
         '# Usage:',
         '#   STORAGE_DIR=/path/to/bigfiles bash experiments/run_joint_scaling.sh',
@@ -365,6 +448,7 @@ def _generate_scaling_script(all_results: dict, output_dir: str):
         orig = ["clip", "dino", "mae", "siglip", "convnext", "data2vec"]
         div_only = orderings.get("diversity_only", {}).get("order", orig)
         joint = orderings.get("joint_a1_b1", {}).get("order", orig)
+        three_term = orderings.get("three_term", {}).get("order", orig)
 
         def _steps(order):
             """Build cumulative model strings: clip, clip,dino, clip,dino,mae, ..."""
@@ -376,7 +460,11 @@ def _generate_scaling_script(all_results: dict, output_dir: str):
         script_lines.append(f'run_{ds}() {{')
         script_lines.append(f'    echo "=== {ds.upper()} ==="')
 
-        for tag, order in [("orig", orig), ("div", div_only), ("joint", joint)]:
+        seen = []
+        for tag, order in [("orig", orig), ("div", div_only), ("joint", joint), ("three", three_term)]:
+            if order in seen:
+                continue
+            seen.append(order)
             steps = _steps(order)
             for i, step in enumerate(steps):
                 script_lines.append(f'    run_one "{ds}" "{step}" "{i+1}" "{tag}"')

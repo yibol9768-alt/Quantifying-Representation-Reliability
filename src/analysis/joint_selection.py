@@ -11,12 +11,26 @@ where:
 
 The multiplicative form ensures that zero relevance (noise model) yields
 zero utility regardless of diversity — matching our empirical finding that
-DINO on SVHN is harmful despite being "diverse" from existing models.
+a model can be novel yet still unhelpful for the task.
 
-Information-theoretic justification:
-    ΔI(m, S) = I(f_m; Y | f_S)
-             ≈ I(f_m; Y) · [1 - I(f_m; f_S) / H(f_m)]
-             = Relevance(m) · Novelty(m, S)
+Information-theoretic note:
+    The exact decomposition is
+        I(f_m; Y | f_S)
+      = I(f_m; Y) - I(f_m; f_S) + I(f_m; f_S | Y).
+
+    The original multiplicative MUMS score implemented here only uses
+    tractable proxies for the first two terms:
+        - relevance proxy for I(f_m; Y)
+        - CKA-based redundancy proxy for I(f_m; f_S)
+
+    It does not include a proxy for the class-conditional term
+    I(f_m; f_S | Y). Class-conditional CKA can be analyzed separately as a
+    diagnostic, but it is not folded into the original MUMS score.
+
+    For a three-term low-order approximation, see
+    conditional_joint_greedy_selection below, which replaces the set-level
+    third term by an average pairwise conditional term following the spirit
+    of Brown et al. (2012).
 
 References:
     - Carbonell & Goldberg (1998), MMR: analogous additive form for IR
@@ -88,6 +102,39 @@ def marginal_utility(
     novelty = 1.0 - redundancy
 
     return (rel ** alpha) * (novelty ** beta)
+
+
+def conditional_marginal_utility(
+    candidate: str,
+    selected: List[str],
+    cka_matrix: np.ndarray,
+    conditional_matrix: np.ndarray,
+    model_names: List[str],
+    relevance: Dict[str, float],
+    lambda_red: float = 1.0,
+    eta_cond: float = 1.0,
+) -> float:
+    """Compute a three-term low-order utility.
+
+    Score(m | S) = relevance(m)
+                 - lambda_red * avg_redundancy(m, S)
+                 + eta_cond * avg_conditional_term(m, S)
+
+    The conditional term is intended to approximate the pairwise low-order
+    correction avg_{j in S} I(F_m; F_j | Y), not the full set-level quantity.
+    """
+    name_to_idx = {n: i for i, n in enumerate(model_names)}
+    c_idx = name_to_idx[candidate]
+
+    rel = relevance.get(candidate, 0.0)
+    if not selected:
+        redundancy = 0.0
+        conditional = 0.0
+    else:
+        redundancy = float(np.mean([cka_matrix[name_to_idx[s], c_idx] for s in selected]))
+        conditional = float(np.mean([conditional_matrix[name_to_idx[s], c_idx] for s in selected]))
+
+    return rel - lambda_red * redundancy + eta_cond * conditional
 
 
 def joint_greedy_selection(
@@ -162,6 +209,87 @@ def joint_greedy_selection(
         selected.append(best_model)
         remaining.remove(best_model)
 
+        trace.append({
+            "step": step,
+            "model": best_model,
+            "utility": best_utility,
+            **best_info,
+        })
+        step += 1
+
+    return selected, trace
+
+
+def conditional_joint_greedy_selection(
+    cka_matrix: np.ndarray,
+    conditional_matrix: np.ndarray,
+    model_names: List[str],
+    relevance: Dict[str, float],
+    lambda_red: float = 1.0,
+    eta_cond: float = 1.0,
+    start_model: Optional[str] = None,
+) -> Tuple[List[str], List[dict]]:
+    """Greedy selection with a low-order three-term approximation.
+
+    At each step, select the model with highest score:
+
+        score(m | S) = R(m) - lambda_red * D(m, S) + eta_cond * C(m, S)
+
+    where:
+        D(m, S) = avg CKA redundancy to selected set
+        C(m, S) = avg pairwise conditional term to selected set
+    """
+    name_to_idx = {n: i for i, n in enumerate(model_names)}
+
+    if start_model is None:
+        start_model = max(
+            (m for m in model_names if m in relevance),
+            key=lambda m: relevance[m],
+        )
+
+    selected = [start_model]
+    remaining = [m for m in model_names if m != start_model]
+    trace = [{
+        "step": 1,
+        "model": start_model,
+        "relevance": relevance.get(start_model, 0.0),
+        "avg_cka_to_set": 0.0,
+        "avg_conditional_to_set": 0.0,
+        "utility": relevance.get(start_model, 0.0),
+    }]
+
+    step = 2
+    while remaining:
+        best_model = None
+        best_utility = -float("inf")
+        best_info = {}
+
+        for candidate in remaining:
+            u = conditional_marginal_utility(
+                candidate,
+                selected,
+                cka_matrix,
+                conditional_matrix,
+                model_names,
+                relevance,
+                lambda_red=lambda_red,
+                eta_cond=eta_cond,
+            )
+            c_idx = name_to_idx[candidate]
+            avg_cka = float(np.mean([cka_matrix[name_to_idx[s], c_idx] for s in selected]))
+            avg_cond = float(np.mean([conditional_matrix[name_to_idx[s], c_idx] for s in selected]))
+
+            if u > best_utility:
+                best_utility = u
+                best_model = candidate
+                best_info = {
+                    "relevance": relevance.get(candidate, 0.0),
+                    "avg_cka_to_set": avg_cka,
+                    "avg_conditional_to_set": avg_cond,
+                }
+
+        selected.append(best_model)
+        remaining.remove(best_model)
         trace.append({
             "step": step,
             "model": best_model,
