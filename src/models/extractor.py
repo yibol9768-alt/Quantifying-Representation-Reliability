@@ -13,15 +13,32 @@ import torch.nn.functional as F
 from transformers import (
     AutoImageProcessor,
     CLIPVisionModel,
+    ConvNextModel,
     Data2VecVisionModel,
+    DeiTModel,
     Dinov2Model,
+    ResNetModel,
     SiglipVisionModel,
-    ViTMAEModel,
-    ViTModel,
     SwinModel,
     BeitModel,
-    ConvNextModel,
+    ViTMAEModel,
+    ViTModel,
 )
+
+# Map architecture family name -> HuggingFace model class
+_MODEL_CLASSES = {
+    "vit": ViTModel,
+    "deit": DeiTModel,
+    "swin": SwinModel,
+    "beit": BeitModel,
+    "data2vec": Data2VecVisionModel,
+    "mae": ViTMAEModel,
+    "dinov2": Dinov2Model,
+    "clip": CLIPVisionModel,
+    "siglip": SiglipVisionModel,
+    "convnext": ConvNextModel,
+    "resnet": ResNetModel,
+}
 
 
 def _infer_square_size(num_tokens: int) -> Optional[int]:
@@ -110,59 +127,136 @@ class FeatureExtractor(nn.Module):
     """
 
     MODEL_PATHS = {
-        # Vision Transformer series
+        # ── Vision Transformer (supervised) ──────────────────────────
         "vit": {
             "path": "vit-base-patch16",
             "hf_name": "google/vit-base-patch16-224",
-            "dim": 768,
+            "arch": "vit", "dim": 768,
+        },
+        "vit_large": {
+            "path": "vit-large-patch16",
+            "hf_name": "google/vit-large-patch16-224",
+            "arch": "vit", "dim": 1024,
+        },
+        # ── DeiT (data-efficient ViT) ───────────────────────────────
+        "deit_small": {
+            "path": "deit-small-patch16",
+            "hf_name": "facebook/deit-small-patch16-224",
+            "arch": "deit", "dim": 384,
+        },
+        "deit_base": {
+            "path": "deit-base-patch16",
+            "hf_name": "facebook/deit-base-patch16-224",
+            "arch": "deit", "dim": 768,
+        },
+        # ── Swin Transformer ────────────────────────────────────────
+        "swin_tiny": {
+            "path": "swin-tiny",
+            "hf_name": "microsoft/swin-tiny-patch4-window7-224",
+            "arch": "swin", "dim": 768,
         },
         "swin": {
             "path": "swin-base",
             "hf_name": "microsoft/swin-base-patch4-window7-224",
-            "dim": 1024,
+            "arch": "swin", "dim": 1024,
         },
+        # ── BEiT ────────────────────────────────────────────────────
         "beit": {
             "path": "beit-base",
             "hf_name": "microsoft/beit-base-patch16-224-pt22k",
-            "dim": 768,
+            "arch": "beit", "dim": 768,
         },
+        "beit_large": {
+            "path": "beit-large",
+            "hf_name": "microsoft/beit-large-patch16-224-pt22k",
+            "arch": "beit", "dim": 1024,
+        },
+        # ── Data2Vec Vision ─────────────────────────────────────────
         "data2vec": {
             "path": "data2vec-vision-base",
             "hf_name": "facebook/data2vec-vision-base",
-            "dim": 768,
+            "arch": "data2vec", "dim": 768,
         },
-        # Self-supervised series
+        # ── MAE (self-supervised) ───────────────────────────────────
         "mae": {
             "path": "vit-mae-base",
             "hf_name": "facebook/vit-mae-base",
-            "dim": 768,
+            "arch": "mae", "dim": 768,
+        },
+        "mae_large": {
+            "path": "vit-mae-large",
+            "hf_name": "facebook/vit-mae-large",
+            "arch": "mae", "dim": 1024,
+        },
+        # ── DINOv2 (self-supervised) ────────────────────────────────
+        "dinov2_small": {
+            "path": "dinov2-small",
+            "hf_name": "facebook/dinov2-small",
+            "arch": "dinov2", "dim": 384,
         },
         "dino": {
             "path": "dinov2-base",
             "hf_name": "facebook/dinov2-base",
-            "dim": 768,
+            "arch": "dinov2", "dim": 768,
         },
-        # CLIP series
+        "dinov2_large": {
+            "path": "dinov2-large",
+            "hf_name": "facebook/dinov2-large",
+            "arch": "dinov2", "dim": 1024,
+        },
+        # ── CLIP (contrastive language-image) ───────────────────────
+        "clip_base32": {
+            "path": "clip-vit-base-patch32",
+            "hf_name": "openai/clip-vit-base-patch32",
+            "arch": "clip", "dim": 768,
+        },
         "clip": {
             "path": "clip-vit-base-patch16",
             "hf_name": "openai/clip-vit-base-patch16",
-            "dim": 768,
+            "arch": "clip", "dim": 768,
+        },
+        "clip_large": {
+            "path": "clip-vit-large-patch14",
+            "hf_name": "openai/clip-vit-large-patch14",
+            "arch": "clip", "dim": 1024,
         },
         "openclip": {
             "path": "openclip-vit-b32",
             "hf_name": "laion/CLIP-ViT-B-32-laion2B-s34B-b79K",
-            "dim": 768,
+            "arch": "clip", "dim": 768,
         },
+        # ── SigLIP ──────────────────────────────────────────────────
         "siglip": {
             "path": "siglip-base-patch16-224",
             "hf_name": "google/siglip-base-patch16-224",
-            "dim": 768,
+            "arch": "siglip", "dim": 768,
         },
-        # Modern CNN
+        # ── ConvNeXt (modern CNN) ───────────────────────────────────
+        "convnext_tiny": {
+            "path": "convnext-tiny",
+            "hf_name": "facebook/convnext-tiny-224",
+            "arch": "convnext", "dim": 768,
+        },
         "convnext": {
             "path": "convnext-base",
             "hf_name": "facebook/convnext-base-224",
-            "dim": 1024,
+            "arch": "convnext", "dim": 1024,
+        },
+        "convnext_large": {
+            "path": "convnext-large",
+            "hf_name": "facebook/convnext-large-224",
+            "arch": "convnext", "dim": 1536,
+        },
+        # ── ResNet (classic CNN baseline) ───────────────────────────
+        "resnet50": {
+            "path": "resnet-50",
+            "hf_name": "microsoft/resnet-50",
+            "arch": "resnet", "dim": 2048,
+        },
+        "resnet101": {
+            "path": "resnet-101",
+            "hf_name": "microsoft/resnet-101",
+            "arch": "resnet", "dim": 2048,
         },
     }
 
@@ -185,33 +279,19 @@ class FeatureExtractor(nn.Module):
             raise FileNotFoundError(
                 f"Model not found at {model_path}\n"
                 f"Please download manually:\n"
-                f"  hf download {config['hf_name']} --local-dir {model_path}\n"
-                f"See README for details."
+                f"  huggingface-cli download {config['hf_name']} --local-dir {model_path}\n"
+                f"See MODEL_ZOO.md for details."
             )
 
-        # Load model based on type
-        if model_type == "mae":
-            self.model = ViTMAEModel.from_pretrained(str(model_path), local_files_only=True)
-        elif model_type == "clip":
-            self.model = CLIPVisionModel.from_pretrained(str(model_path), local_files_only=True)
-        elif model_type == "openclip":
-            self.model = CLIPVisionModel.from_pretrained(str(model_path), local_files_only=True)
-        elif model_type == "siglip":
-            self.model = SiglipVisionModel.from_pretrained(str(model_path), local_files_only=True)
-        elif model_type == "dino":
-            self.model = Dinov2Model.from_pretrained(str(model_path), local_files_only=True)
-        elif model_type == "vit":
-            self.model = ViTModel.from_pretrained(str(model_path), local_files_only=True)
-        elif model_type == "swin":
-            self.model = SwinModel.from_pretrained(str(model_path), local_files_only=True)
-        elif model_type == "beit":
-            self.model = BeitModel.from_pretrained(str(model_path), local_files_only=True)
-        elif model_type == "data2vec":
-            self.model = Data2VecVisionModel.from_pretrained(str(model_path), local_files_only=True)
-        elif model_type == "convnext":
-            self.model = ConvNextModel.from_pretrained(str(model_path), local_files_only=True)
-        else:
-            raise ValueError(f"Unsupported model type: {model_type}")
+        # Load model via architecture family lookup
+        arch = config.get("arch", model_type)
+        model_cls = _MODEL_CLASSES.get(arch)
+        if model_cls is None:
+            raise ValueError(
+                f"Unknown architecture '{arch}' for model '{model_type}'. "
+                f"Supported: {list(_MODEL_CLASSES.keys())}"
+            )
+        self.model = model_cls.from_pretrained(str(model_path), local_files_only=True)
 
         self.processor = AutoImageProcessor.from_pretrained(str(model_path), local_files_only=True)
 

@@ -47,19 +47,25 @@ def get_transforms(model_type: str = "mae", train: bool = False, dataset: str = 
         transforms.Compose object
     """
     # Get normalization based on model type
+    # Normalization groups: model_type -> (mean, std)
+    _CLIP_NORM = ((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711))
+    _HALF_NORM = ((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+    _IMAGENET_NORM = ((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
+
+    _NORM_MAP = {
+        # CLIP-style normalization
+        "clip": _CLIP_NORM, "clip_base32": _CLIP_NORM, "clip_large": _CLIP_NORM,
+        "openclip": _CLIP_NORM,
+        # 0.5/0.5 normalization
+        "beit": _HALF_NORM, "beit_large": _HALF_NORM,
+        "data2vec": _HALF_NORM,
+        "siglip": _HALF_NORM,
+    }
+
     if model_type == "fusion":
         normalize = None
-    elif model_type in ("clip", "openclip"):
-        mean = (0.48145466, 0.4578275, 0.40821073)
-        std = (0.26862954, 0.26130258, 0.27577711)
-        normalize = transforms.Normalize(mean=mean, std=std)
-    elif model_type in ("beit", "data2vec", "siglip"):
-        mean = (0.5, 0.5, 0.5)
-        std = (0.5, 0.5, 0.5)
-        normalize = transforms.Normalize(mean=mean, std=std)
     else:
-        mean = (0.485, 0.456, 0.406)
-        std = (0.229, 0.224, 0.225)
+        mean, std = _NORM_MAP.get(model_type, _IMAGENET_NORM)
         normalize = transforms.Normalize(mean=mean, std=std)
 
     # MNIST special handling: grayscale to RGB conversion

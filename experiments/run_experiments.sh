@@ -52,9 +52,9 @@ methods_comparison() {
     done
 }
 
-# ── Model scaling experiment ──
+# ── Model scaling experiment (original 6) ──
 scaling_experiment() {
-    echo "=== Model Scaling (gated fusion) ==="
+    echo "=== Model Scaling (gated fusion, original 6 models) ==="
     local method="${1:-gated}"
     run_single clip
     run_fusion "$method" clip,dino
@@ -62,6 +62,25 @@ scaling_experiment() {
     run_fusion "$method" clip,dino,mae,siglip
     run_fusion "$method" clip,dino,mae,siglip,convnext
     run_fusion "$method" clip,dino,mae,siglip,convnext,data2vec
+}
+
+# ── Extended model scaling (use selection ordering) ──
+scaling_extended() {
+    echo "=== Extended Model Scaling (use --ordering to specify model order) ==="
+    echo "=== Run selection first: python experiments/run_selection_comparison.py ==="
+    local method="${1:-gated}"
+    local ordering="${2:-clip,dino,mae,siglip,convnext,data2vec,vit,dinov2_large,clip_large,beit,resnet50}"
+    IFS=',' read -ra models <<< "$ordering"
+    local accum=""
+    for model in "${models[@]}"; do
+        if [ -z "$accum" ]; then
+            accum="$model"
+            run_single "$model"
+        else
+            accum="$accum,$model"
+            run_fusion "$method" "$accum"
+        fi
+    done
 }
 
 # ── Multi-dataset experiment ──
@@ -79,6 +98,7 @@ case "${1:---all}" in
     --quick)     quick_test ;;
     --methods)   methods_comparison ;;
     --scaling)   scaling_experiment "${2:-gated}" ;;
+    --scaling-ext) scaling_extended "${2:-gated}" "${3:-}" ;;
     --datasets)  multi_dataset "${2:-gated}" "${3:-clip,dino,mae,siglip}" ;;
     --all)
         quick_test
@@ -86,7 +106,8 @@ case "${1:---all}" in
         scaling_experiment
         ;;
     *)
-        echo "Usage: $0 [--quick|--methods|--scaling|--datasets|--all]"
+        echo "Usage: $0 [--quick|--methods|--scaling|--scaling-ext|--datasets|--all]"
+        echo "  --scaling-ext METHOD ORDERING: extended scaling with custom model order"
         exit 1
         ;;
 esac

@@ -122,7 +122,7 @@ def main():
                         help="Root directory containing per-dataset feature dirs")
     parser.add_argument("--datasets", type=str, required=True,
                         help="Comma-separated list of dataset names")
-    parser.add_argument("--max_models", type=int, default=6,
+    parser.add_argument("--max_models", type=int, default=10,
                         help="Maximum number of models to select")
     parser.add_argument("--output_dir", type=str, default="result/selection_comparison",
                         help="Output directory for results")

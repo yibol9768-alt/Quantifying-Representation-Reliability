@@ -1,15 +1,32 @@
 # 实验补充指南
 
+## 零、模型下载（重要！先做这一步）
+
+项目现在支持 24 个预训练模型。详见 `MODEL_ZOO.md`。
+
+```bash
+# 推荐：下载 15 个模型（覆盖所有家族 + 大小变体，约 5.5GB）
+bash scripts/download_models.sh ./models --recommended
+
+# 或者下载全部 25 个（约 10.5GB）
+bash scripts/download_models.sh ./models --all
+
+# 中国大陆用户先设镜像
+export HF_ENDPOINT=https://hf-mirror.com
+bash scripts/download_models.sh ./models --recommended
+```
+
 ## 一、环境准备
 
 ```bash
-pip install torch numpy scipy
+pip install torch numpy scipy transformers huggingface_hub
 ```
 
 确认导入无报错：
 
 ```bash
 python3 -c "from src.scoring import greedy_select; print('OK')"
+python3 -c "from src.models.extractor import FeatureExtractor; print(f'{len(FeatureExtractor.MODEL_PATHS)} models registered')"
 ```
 
 ---
@@ -18,20 +35,21 @@ python3 -c "from src.scoring import greedy_select; print('OK')"
 
 ### 2.1 预提取特征
 
-需要对每个数据集、每个模型提取冻结特征，保存为如下结构：
+需要对每个数据集、每个模型（24 个）提取冻结特征，保存为如下结构：
 
 ```
 data/features/
 ├── dtd/
-│   ├── clip.pt          # [N, d] float tensor
-│   ├── dino.pt
-│   ├── mae.pt
-│   ├── siglip.pt
-│   ├── convnext.pt
-│   ├── data2vec.pt
+│   ├── clip.pt          # [N, 768] float tensor
+│   ├── clip_large.pt    # [N, 1024]
+│   ├── dino.pt          # [N, 768]
+│   ├── dinov2_large.pt  # [N, 1024]
+│   ├── dinov2_small.pt  # [N, 384]
+│   ├── mae.pt           # [N, 768]
+│   ├── resnet50.pt      # [N, 2048]
+│   ├── ...              # 其他模型
 │   └── labels.pt        # [N] int tensor
 ├── eurosat/
-│   ├── clip.pt
 │   └── ...
 ├── flowers102/
 ├── food101/
@@ -40,11 +58,19 @@ data/features/
 └── ucf101/
 ```
 
-如果已有提特征的脚本（`src/models/extractor.py`），直接跑即可。关键要求：
+提特征方式：先跑 `run_single_model.sh --full` 得到所有单模型结果，或者手动提取：
+
+```bash
+# 提取全部 25 个模型的特征（7 个数据集）
+STORAGE_DIR=/path/to/storage bash experiments/run_single_model.sh --full
+```
+
+关键要求：
 
 - 每个 `.pt` 文件是 `torch.save(features, path)`，shape 为 `[N, d]`
 - `labels.pt` 是 `[N]` 的整数 tensor，和特征行对齐
 - 所有模型在同一数据集上的 N 必须相同
+- 模型名对应 `FeatureExtractor.MODEL_PATHS` 中的 key（如 `clip_large`, `dinov2_small`）
 
 ### 2.2 LEEP 所需的 softmax 输出（可选）
 
