@@ -83,7 +83,10 @@ def extract_features(
             all_features.append(feats.cpu())
             all_labels.append(labels)
 
-    features = torch.cat(all_features, dim=0).float()  # [N, d]
+    features = torch.cat(all_features, dim=0).float()  # [N, d] or [N, d, 1, 1]
+    # Squeeze spatial dims (e.g. ResNet pooler_output is [B, C, 1, 1])
+    while features.ndim > 2:
+        features = features.squeeze(-1)
     labels = torch.cat(all_labels, dim=0).long()  # [N]
 
     # Cleanup GPU memory

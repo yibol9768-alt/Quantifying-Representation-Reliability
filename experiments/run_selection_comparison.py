@@ -59,7 +59,10 @@ def load_features(data_root: str, dataset: str):
     for fname in sorted(os.listdir(dataset_dir)):
         if fname.endswith(".pt") and fname != "labels.pt":
             model_name = fname.replace(".pt", "")
-            feat = torch.load(os.path.join(dataset_dir, fname), map_location="cpu")
+            feat = torch.load(os.path.join(dataset_dir, fname), map_location="cpu", weights_only=False)
+            # Squeeze spatial dims (e.g. ResNet pooler_output is [N, C, 1, 1])
+            while feat.ndim > 2:
+                feat = feat.squeeze(-1)
             features[model_name] = feat.numpy().astype(np.float64)
 
     return features, labels
