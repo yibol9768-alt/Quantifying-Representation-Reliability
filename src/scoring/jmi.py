@@ -1,0 +1,151 @@
+"""JMI: Joint Mutual Information model selection.
+
+Implements the JMI criterion from:
+    Brown et al., "Conditional Likelihood Maximisation: A Unifying
+    Framework for Information Theoretic Feature Selection", JMLR 2012.
+
+Adapted to the model selection level: each model is a "feature group".
+The JMI criterion selects the model maximizing:
+    J_jmi(m | S) = sum_{j in S} I(F_m, F_j; Y)
+                 = sum_{j in S} [I(F_m; Y) + I(F_j; Y | F_m)]
+
+In practice, we approximate I(F_m, F_j; Y) = I(F_m; Y) + I(F_j; Y) - I(F_j; F_m)
++ I(F_j; F_m | Y), using Gaussian estimators.
+"""
+
+import numpy as np
+from typing import Dict, List, Optional
+
+
+def _gaussian_entropy(X: np.ndarray, reg: float = 1e-3) -> float:
+    """Gaussian entropy H(X) = 0.5 * log det(2*pi*e * Sigma)."""
+    N, d = X.shape
+    Xc = X - X.mean(axis=0, keepdims=True)
+    cov = (Xc.T @ Xc) / max(N - 1, 1) + reg * np.eye(d)
+    _, logdet = np.linalg.slogdet(cov)
+    return 0.5 * (d * np.log(2 * np.pi * np.e) + logdet)
+
+
+def _joint_mi_with_label(
+    X: np.ndarray,
+    Y_feat: np.ndarray,
+    labels: np.ndarray,
+    reg: float = 1e-3,
+) -> float:
+    """Estimate I(X, Y_feat; labels) under Gaussian assumptions.
+
+    I(X, Y; Z) = H(X, Y) + H(Z) - H(X, Y, Z)
+    where Z is discrete (labels), so we use:
+    I(X, Y; Z) = H(X, Y) - H(X, Y | Z)
+    """
+    N = X.shape[0]
+    XY = np.concatenate([X, Y_feat], axis=1)
+
+    h_xy = _gaussian_entropy(XY, reg)
+
+    classes = np.unique(labels)
+    h_xy_given_z = 0.0
+    for c in classes:
+        mask = labels == c
+        n_c = mask.sum()
+        if n_c < 2:
+            continue
+        p_c = n_c / N
+        h_xy_given_z += p_c * _gaussian_entropy(XY[mask], reg)
+
+    return float(max(h_xy - h_xy_given_z, 0.0))
+
+
+def jmi_select(
+    features: Dict[str, np.ndarray],
+    labels: np.ndarray,
+    max_models: int = 6,
+    pca_dim: Optional[int] = 64,
+    reg: float = 1e-3,
+) -> List[str]:
+    """Select models using the JMI criterion.
+
+    At each step, select:
+        m* = argmax_{m not in S} sum_{j in S} I(F_m, F_j; Y)
+
+    For the first model, select by maximum I(F_m; Y).
+
+    Args:
+        features: {model_name: [N, d] feature array}.
+        labels: [N] integer class labels.
+        max_models: Maximum number of models to select.
+        pca_dim: If set, reduce features via PCA before estimation.
+        reg: Covariance regularization.
+
+    Returns:
+        Ordered list of selected model names.
+    """
+    names = list(features.keys())
+    labels = np.asarray(labels).ravel()
+
+    # PCA reduction
+    feats = {}
+    for name, f in features.items():
+        f = f.astype(np.float64)
+        if pca_dim is not None and f.shape[1] > pca_dim:
+            f = _pca(f, pca_dim)
+        feats[name] = f
+
+    N = next(iter(feats.values())).shape[0]
+    classes = np.unique(labels)
+
+    # Relevance I(F_m; Y) for first-step selection
+    relevance = {}
+    for name in names:
+        h_f = _gaussian_entropy(feats[name], reg)
+        h_f_given_y = 0.0
+        for c in classes:
+            mask = labels == c
+            n_c = mask.sum()
+            if n_c < 2:
+                continue
+            p_c = n_c / N
+            h_f_given_y += p_c * _gaussian_entropy(feats[name][mask], reg)
+        relevance[name] = max(h_f - h_f_given_y, 0.0)
+
+    # First model: highest relevance
+    selected = []
+    remaining = set(names)
+    max_models = min(max_models, len(names))
+
+    first = max(names, key=lambda m: relevance[m])
+    selected.append(first)
+    remaining.remove(first)
+
+    # Pre-compute pairwise joint MI: I(F_i, F_j; Y)
+    jmi_cache = {}
+    for i, ni in enumerate(names):
+        for j, nj in enumerate(names):
+            if i < j:
+                val = _joint_mi_with_label(feats[ni], feats[nj], labels, reg)
+                jmi_cache[(ni, nj)] = val
+                jmi_cache[(nj, ni)] = val
+
+    # Greedy selection
+    while len(selected) < max_models and remaining:
+        best_model = None
+        best_score = -np.inf
+
+        for m in remaining:
+            score = sum(jmi_cache.get((m, s), 0.0) for s in selected)
+            if score > best_score:
+                best_score = score
+                best_model = m
+
+        selected.append(best_model)
+        remaining.remove(best_model)
+
+    return selected
+
+
+def _pca(X: np.ndarray, k: int) -> np.ndarray:
+    """Simple PCA to k dimensions."""
+    X = X - X.mean(axis=0, keepdims=True)
+    U, S, _ = np.linalg.svd(X, full_matrices=False)
+    k = min(k, U.shape[1])
+    return U[:, :k] * S[:k]

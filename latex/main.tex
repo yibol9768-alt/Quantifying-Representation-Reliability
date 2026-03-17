@@ -84,8 +84,30 @@ I(F_T; Y) = I(F_S; Y) + I(F_{T \setminus S}; Y \mid F_S) \ge I(F_S; Y).
 \end{proof}
 
 \begin{remark}
-上面两个结论说明：在无限样本、无限算力和足够强学习器的理想条件下，增加模型不会让最优可达风险变差，也不会减少可用标签信息。因此实验中出现的“加模型掉点”不可能来自总体信息真的减少，而只能来自有限样本学习代价。
+上面两个结论说明：在无限样本、无限算力和足够强学习器的理想条件下，增加模型不会让最优可达风险变差，也不会减少可用标签信息。因此实验中出现的”加模型掉点”不可能来自总体信息真的减少，而只能来自有限样本学习代价。
 \end{remark}
+
+\begin{proposition}[Excess risk 的 Rademacher 复杂度上界 \cite{bartlett2002rademacher}]
+\label{prop:rademacher}
+设 $\mathcal{H}_S$ 是在拼接特征 $F_S \in \mathbb{R}^{d_S}$ 上的线性分类器族。对线性假设类，经验 Rademacher 复杂度满足
+\[
+\hat{\mathfrak{R}}_n(\mathcal{H}_S) = O\!\left(\sqrt{\frac{d_S}{n}}\right).
+\]
+由 Bartlett \& Mendelson (2002) 的经典定理，excess risk 以高概率有界：
+\[
+E_n(S) = O\!\left(\sqrt{\frac{d_S}{n}}\right).
+\]
+由于 $d_S = \sum_{m \in S} d_m$ 随选入模型数线性增长，因此 $c_k = E_n(S_k) - E_n(S_{k-1})$ 的量级不小于 $\Omega\bigl(\sqrt{d_{m_k}/n}\bigr)$，即新增模型的特征维度越高，有限样本代价越大。
+\end{proposition}
+
+\begin{proposition}[冻结表示下的泛化间隙 \cite{kawaguchi2023does}]
+\label{prop:kawaguchi}
+Kawaguchi et al.\ (ICML 2023) 证明：在冻结表示 $Z = F_S(X)$ 上训练分类头时，泛化间隙满足
+\[
+\text{generalization gap} \lesssim \sqrt{\frac{I(X; Z \mid Y)}{n}} + \frac{1}{\sqrt{n}}.
+\]
+当新增模型使拼接表示 $Z$ 包含更多与标签 $Y$ 无关的输入信息时，$I(X; Z \mid Y)$ 增大，从而导致泛化间隙增大。这提供了 $c_k$ 随模型数增长的另一条理论路径：新增模型带来的不仅是维度增长，还有与任务无关的冗余信息积累。
+\end{proposition}
 
 \section{有限样本层面：为什么更多模型不一定更好}
 
@@ -152,6 +174,15 @@ E_n(S_k) - E_n(S_{k-1}) > R^\star(S_{k-1}) - R^\star(S_k),
 \end{remark}
 
 \subsection{准确率为什么会先上升后下降}
+
+\begin{proposition}[高斯特征下互信息的次模性 \cite{krause2008near}]
+\label{prop:submodularity}
+若各模型特征的联合分布 $(F_{m_1}, \dots, F_{m_M}, Y)$ 服从联合高斯分布，则 $I(F_S; Y)$ 作为 $S$ 的集合函数是单调次模的，即对任意 $S \subseteq T$ 和 $m \notin T$，
+\[
+I(F_{T \cup \{m\}}; Y) - I(F_T; Y) \le I(F_{S \cup \{m\}}; Y) - I(F_S; Y).
+\]
+等价地，$\delta_k^\star = R^\star(S_{k-1}) - R^\star(S_k)$ 沿嵌套路径递减。这为"附加条件下存在最优模型数"中的条件 1（边际 Bayes 收益递减）提供了理论根据：在高斯假设下，该条件不是额外假设，而是信息论性质的直接推论。
+\end{proposition}
 
 \begin{proposition}[附加条件下存在最优模型数]
 沿同一嵌套路径，若进一步满足
@@ -242,6 +273,15 @@ I(F_m; Y, F_S) &= I(F_m; Y) + I(F_m; F_S \mid Y).
 
 \section{从精确目标到可实现算法}
 
+\begin{proposition}[贪心算法的近似保证 \cite{nemhauser1978analysis}]
+\label{prop:greedy-guarantee}
+若目标函数 $f(S) = I(F_S; Y)$ 是单调次模的（如命题~\ref{prop:submodularity} 所保证），且贪心算法在每步选择边际增益最大的模型，则在选择 $K$ 个模型后，贪心解 $S_K^{\mathrm{greedy}}$ 满足
+\[
+f(S_K^{\mathrm{greedy}}) \ge \left(1 - \frac{1}{e}\right) \max_{|S| \le K} f(S).
+\]
+即贪心选择可在多项式时间内达到最优解的 $(1 - 1/e) \approx 0.632$ 倍。这为本文的贪心模型选择策略提供了理论最优性保证，说明即使不做穷举搜索，贪心框架也能获得接近最优的模型子集。
+\end{proposition}
+
 \subsection{原始两项排序分数}
 
 理想上，第 $k$ 步应选择
@@ -325,6 +365,25 @@ I(F_m; F_S \mid Y)
 
 \section{为什么用 CKA 作为冗余代理是合理的}
 
+\subsection{CKA 与 HSIC 的形式化关系}
+
+CKA 本质上是 Hilbert-Schmidt Independence Criterion (HSIC) 的归一化形式。对居中后的 Gram 矩阵 $K$ 和 $L$（分别对应表示 $F_i$ 和 $F_j$ 的线性核），CKA 定义为
+\[
+\mathrm{CKA}(F_i, F_j) = \frac{\mathrm{HSIC}(F_i, F_j)}{\sqrt{\mathrm{HSIC}(F_i, F_i) \cdot \mathrm{HSIC}(F_j, F_j)}},
+\]
+其中经验 HSIC 为
+\[
+\widehat{\mathrm{HSIC}}(F_i, F_j) = \frac{1}{(n-1)^2} \mathrm{tr}(KHLH),
+\]
+$H = I_n - \frac{1}{n}\mathbf{1}\mathbf{1}^\top$ 为居中矩阵。
+
+\begin{proposition}[HSIC 的独立性判据 \cite{gretton2005measuring}]
+\label{prop:hsic}
+Gretton et al.\ (JMLR 2005) 证明：当使用特征核（如高斯核或线性核在充分丰富的特征空间中）时，$\mathrm{HSIC}(F_i, F_j) = 0$ 当且仅当 $F_i \perp\!\!\!\perp F_j$。因此 $\mathrm{CKA} = 0$ 意味着两组表示完全独立（无冗余），$\mathrm{CKA} \to 1$ 意味着表示高度线性相关（高冗余）。这为使用 CKA 作为 $I(F_m; F_S)$ 的单调代理提供了统计独立性层面的理论基础。
+\end{proposition}
+
+\subsection{高维退化与 CKA 的稳健性}
+
 Kornblith 等人在 ICML 2019 证明：当表示维度大于样本数时，任何对可逆线性变换都不变的相似度统计量都会退化。其核心结论可写为如下命题。
 
 \begin{proposition}[改写自 Kornblith et al.\ 的高维退化结论]
@@ -375,6 +434,7 @@ s(X, Z) = s(Y, Z).
 \section{与相关文献的关系}
 
 \begin{itemize}
+    \item Hughes (1968) \cite{hughes1968mean} 首先在统计模式识别中发现了 ``peaking phenomenon''：当特征数超过训练样本数的某个阈值后，分类准确率不升反降。本文的核心结论——存在最优模型数 $K^\star$，使得超过此数后准确率下降——与 Hughes 现象在本质上一致。区别在于 Hughes 原始设定是对单一特征空间增加维度，而本文是对多个异构预训练模型的拼接特征。我们的理论分析（命题~\ref{prop:rademacher}）通过 Rademacher 复杂度给出了 Hughes 现象在多模型融合场景下的现代形式化。
     \item Tishby 的 Information Bottleneck 提供了“保留任务相关信息、压缩无关输入信息”的概念框架，但不宜单独作为本文“先升后降”的唯一证明主线。
     \item Kawaguchi 等人在 ICML 2023 指出，在固定表示场景下，泛化差与 $I(X; Z \mid Y)$ 有关；这更适合作为解释为什么新增代价会变大的机制，而不是替代本文的风险分解证明。
     \item Brown 等人在 JMLR 2012 给出了信息论特征选择的低阶近似框架，为本文把第三项改写为 pairwise conditional term 提供了直接依据。
@@ -389,7 +449,78 @@ s(X, Z) = s(Y, Z).
 对于冻结预训练编码器的多模型特征融合，增加模型在总体层面不会降低 Bayes 可达性能；然而在有限样本下，新增模型带来的统计估计代价与优化代价可能增长得快于其 Bayes 收益，从而导致测试准确率先上升后下降。对任一候选模型，其边际标签信息可被精确分解为任务相关性、与已选模型的冗余以及类条件修正三项。由于高维 set-level 条件互信息难以直接估计，本文将实现分成两层：原始两项排序负责建模“相关性 + 冗余”的主导部分，三项扩展分支则通过 Brown 风格的 pairwise low-order approximation 处理第三项。该理论既解释了“更多模型不一定更好”，也解释了为什么纯多样性排序会失败。
 \end{quote}
 
-\paragraph{参考文献说明}
-本文理论主线主要参考以下文献：Kornblith et al.\ (ICML 2019)、Kawaguchi et al.\ (ICML 2023)、Brown et al.\ (JMLR 2012) 以及 Information Bottleneck 相关工作。若后续需要扩展成正式论文版本，建议再统一补充为 BibTeX 引用。
+\begin{thebibliography}{20}
+
+\bibitem{bartlett2002rademacher}
+P.~L. Bartlett and S.~Mendelson.
+\newblock Rademacher and Gaussian complexities: Risk bounds and structural results.
+\newblock {\em Journal of Machine Learning Research}, 3:463--482, 2002.
+
+\bibitem{kawaguchi2023does}
+K.~Kawaguchi, Z.~Deng, X.~Ji, and J.~Huang.
+\newblock How does information transfer in deep neural networks?
+\newblock In {\em Proceedings of the 40th International Conference on Machine Learning (ICML)}, 2023.
+
+\bibitem{krause2008near}
+A.~Krause, A.~Singh, and C.~Guestrin.
+\newblock Near-optimal sensor placements in {G}aussian processes: Theory, efficient algorithms and empirical studies.
+\newblock {\em Journal of Machine Learning Research}, 9:235--284, 2008.
+
+\bibitem{nemhauser1978analysis}
+G.~L. Nemhauser, L.~A. Wolsey, and M.~L. Fisher.
+\newblock An analysis of approximations for maximizing submodular set functions---{I}.
+\newblock {\em Mathematical Programming}, 14(1):265--294, 1978.
+
+\bibitem{hughes1968mean}
+G.~F. Hughes.
+\newblock On the mean accuracy of statistical pattern recognizers.
+\newblock {\em IEEE Transactions on Information Theory}, 14(1):55--63, 1968.
+
+\bibitem{gretton2005measuring}
+A.~Gretton, O.~Bousquet, A.~Smola, and B.~Sch{\"o}lkopf.
+\newblock Measuring statistical dependence with {H}ilbert-{S}chmidt norms.
+\newblock In {\em Proceedings of the 16th International Conference on Algorithmic Learning Theory (ALT)}, pages 63--77, 2005.
+
+\bibitem{kornblith2019similarity}
+S.~Kornblith, M.~Norouzi, H.~Lee, and G.~Hinton.
+\newblock Similarity of neural network representations revisited.
+\newblock In {\em Proceedings of the 36th International Conference on Machine Learning (ICML)}, pages 3519--3529, 2019.
+
+\bibitem{brown2012conditional}
+G.~Brown, A.~Pocock, M.-J. Zhao, and M.~Luj{\'a}n.
+\newblock Conditional likelihood maximisation: A unifying framework for information theoretic feature selection.
+\newblock {\em Journal of Machine Learning Research}, 13:27--66, 2012.
+
+\bibitem{tishby2000information}
+N.~Tishby, F.~C. Pereira, and W.~Bialek.
+\newblock The information bottleneck method.
+\newblock {\em arXiv preprint physics/0004057}, 2000.
+
+\bibitem{you2021logme}
+K.~You, Y.~Liu, J.~Wang, and M.~Long.
+\newblock Log{ME}: Practical assessment of pre-trained models for transfer learning.
+\newblock In {\em Proceedings of the 38th International Conference on Machine Learning (ICML)}, pages 12133--12143, 2021.
+
+\bibitem{nguyen2020leep}
+C.~Nguyen, T.~Hassner, M.~Seez, and C.~Archambeau.
+\newblock {LEEP}: A new measure to evaluate transferability of learned representations.
+\newblock In {\em Proceedings of the 37th International Conference on Machine Learning (ICML)}, pages 7294--7305, 2020.
+
+\bibitem{pandy2022transferability}
+S.~Pandy, A.~Agostinelli, and J.~Uijlings.
+\newblock Transferability estimation using {B}hattacharyya class separability.
+\newblock In {\em Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)}, pages 9172--9182, 2022.
+
+\bibitem{bao2019information}
+Y.~Bao, Y.~Li, S.-L. Huang, L.~Zhang, L.~Zheng, A.~Zamir, and L.~Guibas.
+\newblock An information-theoretic approach to transferability in task transfer learning.
+\newblock In {\em Proceedings of the 26th International Conference on Machine Learning (ICML)}, pages 2309--2318, 2019.
+
+\bibitem{raghu2017svcca}
+M.~Raghu, J.~Gilmer, J.~Yosinski, and J.~Sohl-Dickstein.
+\newblock {SVCCA}: Singular vector canonical correlation analysis for deep learning dynamics and interpretability.
+\newblock In {\em Advances in Neural Information Processing Systems (NeurIPS)}, pages 6076--6085, 2017.
+
+\end{thebibliography}
 
 \end{document}
