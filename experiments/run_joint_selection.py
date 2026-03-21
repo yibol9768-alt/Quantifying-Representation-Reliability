@@ -128,15 +128,8 @@ def reorder_matrix(
     return matrix[np.ix_(order, order)]
 
 
-def collect_single_model_accs(results_dir: str) -> dict:
-    """Collect single-model best accuracies from result JSON files.
-
-    Scans results_dir for files matching the pattern:
-        {dataset}_fulltrain_{model}_seed42_*.json
-
-    Returns:
-        {dataset: {model: best_acc_percent}}
-    """
+def collect_single_model_accs(results_dir: str, result_seed: int) -> dict:
+    """Collect single-model validation accuracies from result JSON files."""
     accs = {ds: {} for ds in DATASETS}
     results_path = Path(results_dir)
     if not results_path.exists():
@@ -150,6 +143,8 @@ def collect_single_model_accs(results_dir: str) -> dict:
             cfg = data.get("config", {})
             dataset = cfg.get("dataset", data.get("dataset", ""))
             model = cfg.get("model_type") or cfg.get("model") or data.get("model", "")
+            if cfg.get("seed") != result_seed:
+                continue
 
             # Skip fusion results
             if model == "fusion":
@@ -168,16 +163,23 @@ def collect_single_model_accs(results_dir: str) -> dict:
                 continue
 
             summary = data.get("summary", {})
-            best_acc = data.get("best_accuracy")
+            best_acc = summary.get("best_val_acc")
             if best_acc is None:
                 best_acc = summary.get("best_acc", 0.0)
-            # Keep the best across seeds/runs
-            if model not in accs[dataset] or best_acc > accs[dataset][model]:
-                accs[dataset][model] = best_acc
+            created_at = data.get("created_at", "")
+            existing = accs[dataset].get(model)
+            if existing is None or created_at > existing["created_at"]:
+                accs[dataset][model] = {
+                    "score": best_acc,
+                    "created_at": created_at,
+                }
         except (json.JSONDecodeError, KeyError):
             continue
 
-    return accs
+    return {
+        ds: {model: entry["score"] for model, entry in models.items()}
+        for ds, models in accs.items()
+    }
 
 
 def main():
@@ -201,6 +203,8 @@ def main():
                         help="Redundancy weight for the low-order three-term score")
     parser.add_argument("--eta_cond", type=float, default=1.0,
                         help="Conditional-term weight for the low-order three-term score")
+    parser.add_argument("--result_seed", type=int, default=42,
+                        help="Exact single-model run seed to use when loading validation accuracies")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -230,7 +234,7 @@ def main():
                 print(f"  {ds}: NO DATA")
     elif args.results_dir:
         print("\nCollecting single-model accuracies...")
-        single_accs = collect_single_model_accs(args.results_dir)
+        single_accs = collect_single_model_accs(args.results_dir, result_seed=args.result_seed)
         relevance_source = "accuracy"
         for ds in DATASETS:
             if ds in single_accs and single_accs[ds]:
@@ -284,7 +288,12 @@ def main():
 
         # 2. Pure diversity (CKA-only, from our previous experiment)
         div_order, div_trace = joint_greedy_selection(
-            cka, model_names, rel, alpha=0.0, beta=1.0, start_model="clip",
+            cka,
+            model_names,
+            rel,
+            alpha=0.0,
+            beta=1.0,
+            start_model="clip" if "clip" in model_names else None,
         )
         key_orderings["diversity_only"] = div_order
         ds_results["orderings"]["diversity_only"] = {"order": div_order, "trace": div_trace}

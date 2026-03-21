@@ -31,15 +31,23 @@ project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(project_root))
 
 from src.models.extractor import FeatureExtractor
-from src.data.dataset import get_dataloaders
+from src.data.dataset import get_feature_split_dataloaders
 from src.analysis.logme import logme_score
 
 
 def extract_pooled_features(
     model_type: str,
-    dataloader,
+    dataset: str,
+    data_dir: str,
     model_dir: str,
     device: str,
+    batch_size: int,
+    num_workers: int,
+    max_samples: int,
+    sample_seed: int,
+    selection_split: str,
+    validation_ratio: float,
+    split_seed: int,
 ) -> tuple:
     """Extract pooled features and labels from a model.
 
@@ -49,6 +57,29 @@ def extract_pooled_features(
     """
     extractor = FeatureExtractor(model_type=model_type, model_dir=model_dir)
     extractor.eval().to(device)
+    split_loaders = get_feature_split_dataloaders(
+        dataset=dataset,
+        data_dir=data_dir,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        model_type=model_type,
+        val_ratio=validation_ratio,
+        split_seed=split_seed,
+    )
+    dataloader = split_loaders[selection_split]
+
+    if max_samples > 0 and len(dataloader.dataset) > max_samples:
+        generator = torch.Generator().manual_seed(sample_seed)
+        subset_indices = torch.randperm(
+            len(dataloader.dataset), generator=generator
+        )[:max_samples]
+        dataloader = DataLoader(
+            Subset(dataloader.dataset, subset_indices.tolist()),
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            pin_memory=True,
+        )
 
     all_features = []
     all_labels = []
@@ -85,6 +116,10 @@ def main():
     parser.add_argument("--max_samples", type=int, default=2000,
                         help="Max samples per dataset (0=all)")
     parser.add_argument("--sample_seed", type=int, default=42)
+    parser.add_argument("--selection_split", type=str, default="train",
+                        choices=["train", "val", "test"])
+    parser.add_argument("--validation_ratio", type=float, default=0.2)
+    parser.add_argument("--split_seed", type=int, default=42)
     args = parser.parse_args()
 
     datasets = [d.strip() for d in args.datasets.split(",")]
@@ -95,6 +130,7 @@ def main():
     print(f"Datasets: {datasets}")
     print(f"Models: {models}")
     print(f"Device: {args.device}")
+    print(f"Selection split: {args.selection_split}")
     print(f"Max samples: {args.max_samples if args.max_samples > 0 else 'all'}")
     print(f"Output: {args.output_dir}")
     print()
@@ -104,37 +140,24 @@ def main():
     for dataset in datasets:
         print(f"--- Dataset: {dataset} ---")
 
-        # Load training data
-        train_loader, _ = get_dataloaders(
-            dataset=dataset,
-            data_dir=args.data_dir,
-            batch_size=args.batch_size,
-            num_workers=args.num_workers,
-            model_type="mae",
-        )
-
-        # Subsample
-        if args.max_samples > 0 and len(train_loader.dataset) > args.max_samples:
-            generator = torch.Generator().manual_seed(args.sample_seed)
-            subset_indices = torch.randperm(
-                len(train_loader.dataset), generator=generator
-            )[:args.max_samples]
-            train_loader = DataLoader(
-                Subset(train_loader.dataset, subset_indices.tolist()),
-                batch_size=args.batch_size,
-                shuffle=False,
-                num_workers=args.num_workers,
-                pin_memory=True,
-            )
-            print(f"  Subsampled to {args.max_samples} samples")
-
         ds_scores = {}
         for model_name in models:
             t0 = time.time()
             print(f"  {model_name}: extracting...", end=" ", flush=True)
 
             features, labels = extract_pooled_features(
-                model_name, train_loader, args.model_dir, args.device,
+                model_type=model_name,
+                dataset=dataset,
+                data_dir=args.data_dir,
+                model_dir=args.model_dir,
+                device=args.device,
+                batch_size=args.batch_size,
+                num_workers=args.num_workers,
+                max_samples=args.max_samples,
+                sample_seed=args.sample_seed,
+                selection_split=args.selection_split,
+                validation_ratio=args.validation_ratio,
+                split_seed=args.split_seed,
             )
             print(f"features={features.shape},", end=" ", flush=True)
 
@@ -151,6 +174,16 @@ def main():
     with open(output_path, "w") as f:
         json.dump(all_scores, f, indent=2)
     print(f"Saved LogME scores to {output_path}")
+
+    protocol_path = os.path.join(args.output_dir, "protocol.json")
+    with open(protocol_path, "w") as f:
+        json.dump({
+            "selection_split": args.selection_split,
+            "validation_ratio": args.validation_ratio,
+            "split_seed": args.split_seed,
+            "sample_seed": args.sample_seed,
+        }, f, indent=2)
+    print(f"Saved protocol to {protocol_path}")
 
     # Print summary table
     print("\n=== Summary ===")

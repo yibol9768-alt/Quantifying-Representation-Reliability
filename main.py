@@ -2,6 +2,9 @@
 
 import argparse
 import random
+from datetime import datetime
+from pathlib import Path
+
 import torch
 
 from configs.config import Config, DATASET_CONFIGS
@@ -29,7 +32,7 @@ VALID_MODELS = [
 FUSION_METHODS = [
     "concat", "proj_concat", "weighted_sum", "gated",
     "difference_concat", "hadamard_concat", "bilinear_concat",
-    "film", "context_gating", "lmf", "se_fusion", "late_fusion",
+    "film", "context_gating", "lmf", "se_fusion",
     "comm", "mmvit",
     "topk_router", "moe_router", "attention_router",
 ]
@@ -74,6 +77,8 @@ def parse_args():
     parser.add_argument("--fewshot_min", type=int, default=10)
     parser.add_argument("--fewshot_max", type=int, default=10)
     parser.add_argument("--disable_fewshot", action="store_true")
+    parser.add_argument("--validation_ratio", type=float, default=0.2)
+    parser.add_argument("--validation_seed", type=int, default=42)
 
     # Paths
     parser.add_argument("--storage_dir", type=str, default=None)
@@ -88,6 +93,7 @@ def parse_args():
     parser.add_argument("--cache_dtype", type=str, default="fp32", choices=["fp32", "fp16"])
     parser.add_argument("--rebuild_cache", action="store_true")
     parser.add_argument("--cleanup_cache", action="store_true")
+    parser.add_argument("--allow_fast_kernels", action="store_true")
 
     return parser.parse_args()
 
@@ -168,9 +174,14 @@ def build_derived_names(args):
 
     run_parts = list(base_parts) + [
         f"seed{args.seed}",
+        f"val{_sanitize(args.validation_ratio)}",
+        f"valseed{args.validation_seed}",
         "offline-cache" if not args.no_precompute else "online",
     ]
     args.run_basename = "_".join(_sanitize(p) for p in run_parts)
+    checkpoint_root = Path(args.results_dir) / "checkpoints"
+    checkpoint_root.mkdir(parents=True, exist_ok=True)
+    args.checkpoint_name = str(checkpoint_root / f"{args.run_basename}_{args.run_stamp}_best.pth")
 
     # Build fusion kwargs dict for the extractor factory
     args.fusion_kwargs = {
@@ -198,9 +209,12 @@ def main():
         raise ValueError("fewshot_min and fewshot_max must be positive.")
     if args.fewshot_min > args.fewshot_max:
         raise ValueError("fewshot_min must be <= fewshot_max.")
+    if not 0.0 <= args.validation_ratio < 1.0:
+        raise ValueError("validation_ratio must be in [0, 1).")
 
     set_random_seed(args.seed)
     resolve_storage_paths(args)
+    args.run_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     if args.model == "fusion":
         args.fusion_model_list = parse_fusion_models(args.fusion_models)
@@ -212,9 +226,15 @@ def main():
     build_derived_names(args)
 
     if torch.cuda.is_available():
-        torch.backends.cudnn.benchmark = True
-        torch.backends.cuda.matmul.allow_tf32 = True
-        torch.backends.cudnn.allow_tf32 = True
+        if args.allow_fast_kernels:
+            torch.backends.cudnn.benchmark = True
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+        else:
+            torch.backends.cudnn.benchmark = False
+            torch.backends.cuda.matmul.allow_tf32 = False
+            torch.backends.cudnn.allow_tf32 = False
+            torch.use_deterministic_algorithms(True, warn_only=True)
 
     config = Config(
         dataset=args.dataset,
@@ -237,19 +257,21 @@ def main():
         print(f"  Fusion models: {args.fusion_model_list}")
         print(f"  Harmonization: {_use_harmonization(args)}")
     print(f"Seed: {args.seed}")
+    print(f"Validation split: {args.validation_ratio:.2f} (seed={args.validation_seed})")
     fewshot = not args.disable_fewshot
     print(f"Few-shot: {fewshot}" + (f" ({args.fewshot_min}-{args.fewshot_max}/class)" if fewshot else ""))
     print(f"Cache mode: {not args.no_precompute}")
+    print(f"Deterministic mode: {not args.allow_fast_kernels}")
     print(f"Storage: {args.storage_dir or '(local)'}")
     print("=" * 60)
 
     if torch.cuda.is_available():
         print(f"\nGPU: {torch.cuda.get_device_name(0)}")
 
-    best_acc = train(args, config)
+    best_test_acc = train(args, config)
 
     print("\n" + "=" * 60)
-    print(f"Training Complete! Best Accuracy: {best_acc:.2f}%")
+    print(f"Training Complete! Best Test@BestVal: {best_test_acc:.2f}%")
     print("=" * 60)
 
 

@@ -1,12 +1,14 @@
 """Dataset utilities - manual download only."""
 
+import math
 import random
 from collections import defaultdict
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
 import torch
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
-from typing import List, Optional, Tuple
-from pathlib import Path
 
 
 # Dataset info
@@ -132,26 +134,33 @@ class ImageFolderDataset(Dataset):
         fewshot_min: Optional[int] = None,
         fewshot_max: Optional[int] = None,
         seed: int = 42,
+        samples: Optional[List[Tuple[Path, int]]] = None,
     ):
         self.root = Path(root)
         self.transform = transform
-        self.samples = []
         self.classes = sorted([d.name for d in self.root.iterdir() if d.is_dir()])
         self.class_to_idx = {c: i for i, c in enumerate(self.classes)}
+        if samples is None:
+            self.samples = self._scan_samples()
+        else:
+            self.samples = list(samples)
 
-        for class_name in self.classes:
-            class_dir = self.root / class_name
-            for img_path in class_dir.glob("*"):
-                if img_path.suffix.lower() in [".png", ".jpg", ".jpeg"]:
-                    self.samples.append((img_path, self.class_to_idx[class_name]))
-
-        if fewshot_min is not None and fewshot_max is not None:
+        if samples is None and fewshot_min is not None and fewshot_max is not None:
             self.samples = self._apply_fewshot(
                 self.samples,
                 fewshot_min=fewshot_min,
                 fewshot_max=fewshot_max,
                 seed=seed,
             )
+
+    def _scan_samples(self) -> List[Tuple[Path, int]]:
+        samples = []
+        for class_name in self.classes:
+            class_dir = self.root / class_name
+            for img_path in class_dir.glob("*"):
+                if img_path.suffix.lower() in [".png", ".jpg", ".jpeg"]:
+                    samples.append((img_path, self.class_to_idx[class_name]))
+        return samples
 
     @staticmethod
     def _apply_fewshot(
@@ -268,3 +277,203 @@ def get_dataloaders(
         print(f"Loaded {dataset}: {len(train_set)} train, {len(test_set)} test, {len(train_set.classes)} classes")
 
     return train_loader, test_loader
+
+
+def _split_train_val_samples(
+    samples: List[Tuple[Path, int]],
+    *,
+    val_ratio: float,
+    split_seed: int,
+) -> Tuple[List[Tuple[Path, int]], List[Tuple[Path, int]]]:
+    """Deterministically split train samples into train/val per class."""
+    if not 0.0 <= val_ratio < 1.0:
+        raise ValueError("val_ratio must be in [0, 1).")
+
+    if val_ratio == 0.0:
+        return list(samples), []
+
+    by_class: Dict[int, List[Tuple[Path, int]]] = defaultdict(list)
+    for sample in samples:
+        by_class[sample[1]].append(sample)
+
+    rng = random.Random(split_seed)
+    train_samples: List[Tuple[Path, int]] = []
+    val_samples: List[Tuple[Path, int]] = []
+
+    for label in sorted(by_class):
+        class_samples = sorted(by_class[label], key=lambda item: str(item[0]))
+        rng.shuffle(class_samples)
+
+        if len(class_samples) <= 1:
+            train_samples.extend(class_samples)
+            continue
+
+        val_count = int(math.ceil(len(class_samples) * val_ratio))
+        val_count = min(max(val_count, 1), len(class_samples) - 1)
+
+        val_split = class_samples[:val_count]
+        train_split = class_samples[val_count:]
+
+        train_samples.extend(train_split)
+        val_samples.extend(val_split)
+
+    train_samples.sort(key=lambda item: (item[1], str(item[0])))
+    val_samples.sort(key=lambda item: (item[1], str(item[0])))
+    return train_samples, val_samples
+
+
+def get_train_val_test_dataloaders(
+    dataset: str,
+    data_dir: str,
+    batch_size: int,
+    num_workers: int,
+    model_type: str = "mae",
+    fewshot_min: Optional[int] = None,
+    fewshot_max: Optional[int] = None,
+    seed: int = 42,
+    val_ratio: float = 0.2,
+    split_seed: int = 42,
+) -> Tuple[DataLoader, Optional[DataLoader], DataLoader]:
+    """Get train/val/test dataloaders with a deterministic train-val split."""
+    if not 0.0 <= val_ratio < 1.0:
+        raise ValueError("val_ratio must be in [0, 1).")
+
+    train_tf = get_transforms(model_type, train=True, dataset=dataset)
+    eval_tf = get_transforms(model_type, train=False, dataset=dataset)
+
+    dataset_path = Path(data_dir) / dataset
+    train_path = dataset_path / "train"
+    test_path = dataset_path / "test"
+
+    if not dataset_path.exists():
+        raise FileNotFoundError(
+            f"Dataset not found at {dataset_path}\n"
+            f"Please download manually. See README for instructions."
+        )
+    if not train_path.exists():
+        raise FileNotFoundError(f"Train data not found at {train_path}")
+    if not test_path.exists():
+        raise FileNotFoundError(f"Test data not found at {test_path}")
+
+    base_train = ImageFolderDataset(
+        str(train_path),
+        transform=None,
+        fewshot_min=fewshot_min,
+        fewshot_max=fewshot_max,
+        seed=seed,
+    )
+    train_samples, val_samples = _split_train_val_samples(
+        base_train.samples,
+        val_ratio=val_ratio,
+        split_seed=split_seed,
+    )
+
+    train_set = ImageFolderDataset(
+        str(train_path),
+        transform=train_tf,
+        samples=train_samples,
+    )
+    val_set = None
+    if val_samples:
+        val_set = ImageFolderDataset(
+            str(train_path),
+            transform=eval_tf,
+            samples=val_samples,
+        )
+    test_set = ImageFolderDataset(str(test_path), transform=eval_tf)
+
+    train_loader = DataLoader(
+        train_set,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=True,
+    )
+    val_loader = None
+    if val_set is not None:
+        val_loader = DataLoader(
+            val_set,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            pin_memory=True,
+        )
+    test_loader = DataLoader(
+        test_set,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True,
+    )
+
+    val_count = 0 if val_set is None else len(val_set)
+    print(
+        f"Loaded {dataset}: {len(train_set)} train, {val_count} val, "
+        f"{len(test_set)} test, {len(train_set.classes)} classes"
+    )
+    return train_loader, val_loader, test_loader
+
+
+def get_feature_split_dataloaders(
+    dataset: str,
+    data_dir: str,
+    batch_size: int,
+    num_workers: int,
+    model_type: str = "mae",
+    val_ratio: float = 0.2,
+    split_seed: int = 42,
+) -> Dict[str, DataLoader]:
+    """Get eval-only train/val/test loaders for feature extraction and analysis."""
+    if not 0.0 <= val_ratio < 1.0:
+        raise ValueError("val_ratio must be in [0, 1).")
+
+    eval_tf = get_transforms(model_type, train=False, dataset=dataset)
+    dataset_path = Path(data_dir) / dataset
+    train_path = dataset_path / "train"
+    test_path = dataset_path / "test"
+
+    if not dataset_path.exists():
+        raise FileNotFoundError(
+            f"Dataset not found at {dataset_path}\n"
+            f"Please download manually. See README for instructions."
+        )
+    if not train_path.exists():
+        raise FileNotFoundError(f"Train data not found at {train_path}")
+    if not test_path.exists():
+        raise FileNotFoundError(f"Test data not found at {test_path}")
+
+    base_train = ImageFolderDataset(str(train_path), transform=None)
+    train_samples, val_samples = _split_train_val_samples(
+        base_train.samples,
+        val_ratio=val_ratio,
+        split_seed=split_seed,
+    )
+
+    split_datasets = {
+        "train": ImageFolderDataset(str(train_path), transform=eval_tf, samples=train_samples),
+        "test": ImageFolderDataset(str(test_path), transform=eval_tf),
+    }
+    if val_samples:
+        split_datasets["val"] = ImageFolderDataset(
+            str(train_path),
+            transform=eval_tf,
+            samples=val_samples,
+        )
+
+    loaders = {}
+    for split_name, split_dataset in split_datasets.items():
+        loaders[split_name] = DataLoader(
+            split_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            pin_memory=True,
+        )
+
+    print(
+        f"Loaded feature splits for {dataset}: "
+        f"{len(split_datasets['train'])} train, "
+        f"{len(split_datasets.get('val', []))} val, "
+        f"{len(split_datasets['test'])} test"
+    )
+    return loaders

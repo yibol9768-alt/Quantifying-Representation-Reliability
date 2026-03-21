@@ -25,10 +25,16 @@ EPOCHS="${EPOCHS:-20}"
 BATCH_SIZE="${BATCH_SIZE:-128}"
 SEED="${SEED:-42}"
 DEVICE="${DEVICE:-cuda:0}"
+VAL_RATIO="${VAL_RATIO:-0.2}"
+VAL_SEED="${VAL_SEED:-42}"
+DELETE_FEATURES_AFTER_SELECTION="${DELETE_FEATURES_AFTER_SELECTION:-0}"
+FUSION_CLEANUP_CACHE="${FUSION_CLEANUP_CACHE:-0}"
 
 # 14 个模型（排除 clip_large）
 MODELS="clip,dino,mae,siglip,convnext,data2vec,vit,swin,beit,dinov2_large,dinov2_small,mae_large,deit_small,resnet50"
-DATASETS="stl10,pets,eurosat,dtd,gtsrb,svhn,country211"
+# country211 is much slower; keep it optional so the main pipeline can finish first.
+DATASETS="${DATASETS:-stl10,pets,eurosat,dtd,gtsrb,svhn}"
+DATASETS_TO_RUN="${DATASETS}"
 MAX_K=10
 
 echo "================================================================"
@@ -36,9 +42,13 @@ echo "  完整实验流程"
 echo "================================================================"
 echo "  存储目录:   ${STORAGE_DIR}"
 echo "  模型数:     14"
-echo "  数据集:     7"
+echo "  数据集:     $(echo "${DATASETS_TO_RUN}" | tr ',' '\n' | wc -l | tr -d ' ')"
 echo "  最大融合数: ${MAX_K}"
 echo "  Epochs:     ${EPOCHS}"
+echo "  Val Ratio:  ${VAL_RATIO}"
+echo "  Val Seed:   ${VAL_SEED}"
+echo "  阶段2后删特征: ${DELETE_FEATURES_AFTER_SELECTION}"
+echo "  融合后删cache: ${FUSION_CLEANUP_CACHE}"
 echo "================================================================"
 echo ""
 
@@ -55,6 +65,8 @@ python experiments/extract_features.py \
     --datasets "${DATASETS}" \
     --models "${MODELS}" \
     --batch_size "${BATCH_SIZE}" \
+    --validation_ratio "${VAL_RATIO}" \
+    --split_seed "${VAL_SEED}" \
     --device "${DEVICE}"
 
 echo ""
@@ -70,15 +82,65 @@ echo "================================================================"
 
 mkdir -p "${SELECTION_DIR}"
 
-python experiments/run_selection_comparison.py \
-    --data_root "${FEATURE_DIR}" \
-    --datasets "${DATASETS}" \
-    --max_models "${MAX_K}" \
-    --output_dir "${SELECTION_DIR}"
+python3 - "${FEATURE_DIR}" "${SELECTION_DIR}" "${MAX_K}" "${DATASETS_TO_RUN}" <<'PYTHON_SCRIPT'
+import json
+import os
+import subprocess
+import sys
 
+feature_dir = sys.argv[1]
+selection_dir = sys.argv[2]
+max_k = sys.argv[3]
+datasets = sys.argv[4].split(",")
+
+required_methods = {
+    "Ours_LogME_CKA",
+    "GBC_CKA",
+    "HScore_CKA",
+    "LogME_SVCCA",
+    "mRMR",
+    "JMI",
+    "Relevance_Only",
+    "Random",
+    "All_Models",
+}
+
+def is_complete(path: str) -> bool:
+    if not os.path.exists(path):
+        return False
+    try:
+        with open(path) as f:
+            payload = json.load(f)
+    except Exception:
+        return False
+    present = {k for k, v in payload.items() if isinstance(v, dict) and "selected" in v}
+    return required_methods.issubset(present)
+
+for dataset in datasets:
+    out_path = os.path.join(selection_dir, f"{dataset}.json")
+    if is_complete(out_path):
+        print(f"[SKIP] {dataset}: selection results already complete")
+        continue
+
+    print(f"[RUN] {dataset}: selection comparison")
+    subprocess.run([
+        "python", "experiments/run_selection_comparison.py",
+        "--data_root", feature_dir,
+        "--datasets", dataset,
+        "--max_models", max_k,
+        "--selection_split", "train",
+        "--output_dir", selection_dir,
+    ], check=True)
+
+print(f"[阶段 2 完成] 排序结果已保存到 {selection_dir}")
+PYTHON_SCRIPT
 echo ""
-echo "[阶段 2 完成] 排序结果已保存到 ${SELECTION_DIR}"
-echo ""
+
+if [ "${DELETE_FEATURES_AFTER_SELECTION}" = "1" ]; then
+    echo "[清理] 删除选择阶段特征目录: ${FEATURE_DIR}"
+    rm -rf "${FEATURE_DIR}"
+    echo ""
+fi
 
 # ================================================================
 # 阶段 3: 按排序做融合训练
@@ -89,9 +151,12 @@ echo "================================================================"
 
 mkdir -p "${FUSION_DIR}"
 
-# 读取排序结果，对每个数据集 × 每种方法 × k=2..MAX_K 跑融合
-python3 - "${SELECTION_DIR}" "${DATASETS}" "${MAX_K}" "${STORAGE_DIR}" "${EPOCHS}" "${BATCH_SIZE}" "${SEED}" "${FUSION_DIR}" <<'PYTHON_SCRIPT'
-import json, sys, os, subprocess
+python3 - "${SELECTION_DIR}" "${DATASETS}" "${MAX_K}" "${STORAGE_DIR}" "${EPOCHS}" "${BATCH_SIZE}" "${SEED}" "${FUSION_DIR}" "${VAL_RATIO}" "${VAL_SEED}" <<'PYTHON_SCRIPT'
+import hashlib
+import json
+import os
+import subprocess
+import sys
 
 selection_dir = sys.argv[1]
 datasets = sys.argv[2].split(",")
@@ -101,8 +166,9 @@ epochs = sys.argv[5]
 batch_size = sys.argv[6]
 seed = sys.argv[7]
 fusion_dir = sys.argv[8]
+val_ratio = sys.argv[9]
+val_seed = sys.argv[10]
 
-# 要跑的选择方法
 METHODS = [
     "Ours_LogME_CKA",
     "GBC_CKA",
@@ -140,15 +206,14 @@ for dataset in datasets:
 
         ordering = entry["selected"]
 
-        # k=1 是单模型（已有结果），从 k=2 开始跑融合
         for k in range(2, min(max_k + 1, len(ordering) + 1)):
             models_str = ",".join(ordering[:k])
-
-            # 结果标识
             tag = f"{dataset}_{method}_k{k}"
-            marker = os.path.join(fusion_dir, f"{tag}.done")
+            marker_hash = hashlib.sha1(
+                f"{models_str}|seed={seed}|val={val_ratio}|valseed={val_seed}".encode("utf-8")
+            ).hexdigest()[:10]
+            marker = os.path.join(fusion_dir, f"{tag}_{marker_hash}.done")
 
-            # 断点续跑：跳过已完成的
             if os.path.exists(marker):
                 completed_runs += 1
                 continue
@@ -166,14 +231,17 @@ for dataset in datasets:
                 "--epochs", epochs,
                 "--batch_size", batch_size,
                 "--seed", seed,
+                "--validation_ratio", val_ratio,
+                "--validation_seed", val_seed,
                 "--cache_dtype", "fp32",
                 "--disable_fewshot",
                 "--results_dir", fusion_dir,
             ]
+            if os.environ.get("FUSION_CLEANUP_CACHE", "0") == "1":
+                cmd.append("--cleanup_cache")
 
             try:
                 subprocess.run(cmd, check=True)
-                # 标记完成
                 with open(marker, "w") as f:
                     f.write(f"{models_str}\n")
                 completed_runs += 1
@@ -184,12 +252,13 @@ for dataset in datasets:
                 print("\n[中断] 下次运行会从断点继续")
                 sys.exit(1)
 
-print(f"\n{'='*60}")
-print(f"融合训练完成")
-print(f"  新完成: {completed_runs}")
+print(f"\n{'=' * 60}")
+print("融合训练完成")
+print(f"  总尝试: {total_runs}")
+print(f"  已完成: {completed_runs}")
 print(f"  失败:   {failed_runs}")
 print(f"  结果:   {fusion_dir}")
-print(f"{'='*60}")
+print(f"{'=' * 60}")
 PYTHON_SCRIPT
 
 echo ""

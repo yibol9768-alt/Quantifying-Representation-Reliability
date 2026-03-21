@@ -12,8 +12,8 @@ Usage:
         --output_dir result/selection_comparison
 
 Expected feature directory layout:
-    {data_root}/{dataset}/{model_name}.pt   # [N, d] tensor
-    {data_root}/{dataset}/labels.pt          # [N] integer tensor
+    {data_root}/{dataset}/{split}/{model_name}.pt   # [N, d] tensor
+    {data_root}/{dataset}/{split}/labels.pt         # [N] integer tensor
 """
 
 import argparse
@@ -32,7 +32,6 @@ from src.scoring.selection import greedy_select
 SELECTION_CONFIGS = [
     # (name, relevance, redundancy, selection_method, lambda)
     ("Ours_LogME_CKA", "logme", "cka", "relevance_redundancy", 1.0),
-    ("LEEP_CKA", "leep", "cka", "relevance_redundancy", 1.0),
     ("GBC_CKA", "gbc", "cka", "relevance_redundancy", 1.0),
     ("HScore_CKA", "hscore", "cka", "relevance_redundancy", 1.0),
     ("LogME_SVCCA", "logme", "svcca", "relevance_redundancy", 1.0),
@@ -43,9 +42,20 @@ SELECTION_CONFIGS = [
 ]
 
 
-def load_features(data_root: str, dataset: str):
-    """Load pre-extracted features and labels for a dataset."""
-    dataset_dir = os.path.join(data_root, dataset)
+def _flatten_feature_array(feat: torch.Tensor) -> np.ndarray:
+    """Normalize serialized feature tensors to [N, D] for scoring."""
+    if feat.ndim <= 2:
+        return feat.numpy().astype(np.float64)
+    if all(dim == 1 for dim in feat.shape[2:]):
+        feat = feat.flatten(1)
+    else:
+        feat = feat.reshape(feat.size(0), -1)
+    return feat.numpy().astype(np.float64)
+
+
+def load_features(data_root: str, dataset: str, split: str):
+    """Load pre-extracted features and labels for one dataset split."""
+    dataset_dir = os.path.join(data_root, dataset, split)
     if not os.path.isdir(dataset_dir):
         raise FileNotFoundError(f"Dataset directory not found: {dataset_dir}")
 
@@ -59,26 +69,18 @@ def load_features(data_root: str, dataset: str):
     for fname in sorted(os.listdir(dataset_dir)):
         if fname.endswith(".pt") and fname != "labels.pt":
             model_name = fname.replace(".pt", "")
-            feat = torch.load(os.path.join(dataset_dir, fname), map_location="cpu", weights_only=False)
-            # Squeeze spatial dims (e.g. ResNet pooler_output is [N, C, 1, 1])
-            while feat.ndim > 2:
-                feat = feat.squeeze(-1)
-            features[model_name] = feat.numpy().astype(np.float64)
+            feat = torch.load(os.path.join(dataset_dir, fname), map_location="cpu")
+            features[model_name] = _flatten_feature_array(feat)
 
     return features, labels
 
 
-def run_comparison(features, labels, max_models, source_probs=None):
+def run_comparison(features, labels, max_models):
     """Run all selection methods and return results."""
     results = {}
     all_models = sorted(features.keys())
 
     for config_name, rel, red, sel, lam in SELECTION_CONFIGS:
-        # Skip LEEP if no source probs available
-        if rel == "leep" and source_probs is None:
-            print(f"  Skipping {config_name}: LEEP requires source_probs")
-            continue
-
         print(f"  Running {config_name}...", end=" ", flush=True)
         t0 = time.time()
 
@@ -91,7 +93,6 @@ def run_comparison(features, labels, max_models, source_probs=None):
                 selection_method=sel,
                 max_models=max_models,
                 lambda_param=lam,
-                source_probs=source_probs,
             )
             elapsed = time.time() - t0
             results[config_name] = {
@@ -129,6 +130,9 @@ def main():
                         help="Maximum number of models to select")
     parser.add_argument("--output_dir", type=str, default="result/selection_comparison",
                         help="Output directory for results")
+    parser.add_argument("--selection_split", type=str, default="train",
+                        choices=["train", "val", "test"],
+                        help="Dataset split used to compute selection statistics")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -142,14 +146,19 @@ def main():
         print(f"{'='*60}")
 
         try:
-            features, labels = load_features(args.data_root, dataset)
+            features, labels = load_features(args.data_root, dataset, args.selection_split)
             print(f"  Loaded {len(features)} models, {len(labels)} samples, "
-                  f"{len(np.unique(labels))} classes")
+                  f"{len(np.unique(labels))} classes from split={args.selection_split}")
         except FileNotFoundError as e:
             print(f"  SKIP: {e}")
             continue
 
         results = run_comparison(features, labels, args.max_models)
+        results["_protocol"] = {
+            "selection_split": args.selection_split,
+            "selection_eval_split": "val",
+            "final_eval_split": "test",
+        }
         all_results[dataset] = results
 
         # Save per-dataset result

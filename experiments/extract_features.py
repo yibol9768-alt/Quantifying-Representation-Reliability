@@ -3,8 +3,9 @@
 This script produces the feature files needed by run_selection_comparison.py.
 
 Output structure:
-    {output_dir}/{dataset}/{model_name}.pt   # [N, d] float32 tensor
-    {output_dir}/{dataset}/labels.pt          # [N] int64 tensor
+    {output_dir}/{dataset}/{split}/{model_name}.pt   # [N, d] float32 tensor
+    {output_dir}/{dataset}/{split}/labels.pt         # [N] int64 tensor
+    {output_dir}/{dataset}/protocol.json
 
 Usage:
     python experiments/extract_features.py \
@@ -22,6 +23,7 @@ Usage:
 """
 
 import argparse
+import json
 import os
 import sys
 
@@ -31,7 +33,7 @@ from tqdm import tqdm
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.models.extractor import FeatureExtractor
-from src.data.dataset import get_dataloaders
+from src.data.dataset import get_feature_split_dataloaders
 
 
 ALL_RECOMMENDED_MODELS = [
@@ -44,14 +46,26 @@ ALL_RECOMMENDED_MODELS = [
 ALL_DATASETS = ["stl10", "pets", "eurosat", "dtd", "gtsrb", "svhn", "country211"]
 
 
+def _flatten_feature_tensor(features: torch.Tensor) -> torch.Tensor:
+    """Normalize extracted features to [N, D] before persisting them."""
+    if features.ndim <= 2:
+        return features
+    if all(dim == 1 for dim in features.shape[2:]):
+        return features.flatten(1)
+    return features.reshape(features.size(0), -1)
+
+
 def extract_features(
     model_name: str,
     dataset: str,
+    split: str,
     data_dir: str,
     model_dir: str,
     batch_size: int,
     num_workers: int,
     device: torch.device,
+    val_ratio: float,
+    split_seed: int,
 ) -> tuple:
     """Extract features for one model on one dataset.
 
@@ -64,29 +78,31 @@ def extract_features(
         model_dir=model_dir,
     ).to(device)
 
-    # Use test split for feature extraction (evaluation features)
-    _, test_loader = get_dataloaders(
+    split_loaders = get_feature_split_dataloaders(
         dataset=dataset,
         data_dir=data_dir,
         batch_size=batch_size,
         num_workers=num_workers,
         model_type=model_name,
+        val_ratio=val_ratio,
+        split_seed=split_seed,
     )
+    if split not in split_loaders:
+        raise ValueError(f"Split '{split}' is not available for dataset '{dataset}'.")
+    loader = split_loaders[split]
 
     all_features = []
     all_labels = []
 
     with torch.no_grad():
-        for images, labels in tqdm(test_loader, desc=f"  {model_name}/{dataset}", leave=False):
+        for images, labels in tqdm(loader, desc=f"  {model_name}/{dataset}/{split}", leave=False):
             images = images.to(device)
             feats = extractor(images)  # [B, d]
             all_features.append(feats.cpu())
             all_labels.append(labels)
 
-    features = torch.cat(all_features, dim=0).float()  # [N, d] or [N, d, 1, 1]
-    # Squeeze spatial dims (e.g. ResNet pooler_output is [B, C, 1, 1])
-    while features.ndim > 2:
-        features = features.squeeze(-1)
+    features = torch.cat(all_features, dim=0).float()
+    features = _flatten_feature_tensor(features)
     labels = torch.cat(all_labels, dim=0).long()  # [N]
 
     # Cleanup GPU memory
@@ -116,6 +132,8 @@ def main():
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--device", type=str, default="cuda:0")
+    parser.add_argument("--validation_ratio", type=float, default=0.2)
+    parser.add_argument("--split_seed", type=int, default=42)
     args = parser.parse_args()
 
     # Resolve storage paths
@@ -136,6 +154,7 @@ def main():
     print(f"Datasets: {len(datasets)} -> {datasets}")
     print(f"Output:   {args.output_dir}")
     print(f"Device:   {device}")
+    print(f"Protocol: Train/Val/Test (val_ratio={args.validation_ratio}, split_seed={args.split_seed})")
     print("=" * 60)
 
     for dataset in datasets:
@@ -146,41 +165,50 @@ def main():
         out_dir = os.path.join(args.output_dir, dataset)
         os.makedirs(out_dir, exist_ok=True)
 
-        labels_saved = False
+        protocol_path = os.path.join(out_dir, "protocol.json")
+        with open(protocol_path, "w", encoding="utf-8") as f:
+            json.dump({
+                "selection_split": "train",
+                "selection_eval_split": "val",
+                "final_eval_split": "test",
+                "validation_ratio": args.validation_ratio,
+                "split_seed": args.split_seed,
+            }, f, indent=2)
 
-        for model_name in models:
-            out_path = os.path.join(out_dir, f"{model_name}.pt")
+        for split in ("train", "val", "test"):
+            split_dir = os.path.join(out_dir, split)
+            os.makedirs(split_dir, exist_ok=True)
+            labels_path = os.path.join(split_dir, "labels.pt")
 
-            # Skip if already extracted
-            if os.path.exists(out_path):
-                print(f"  [SKIP] {model_name} (already exists)")
-                continue
+            for model_name in models:
+                out_path = os.path.join(split_dir, f"{model_name}.pt")
 
-            print(f"  [EXTRACT] {model_name}...")
-            try:
-                features, labels = extract_features(
-                    model_name=model_name,
-                    dataset=dataset,
-                    data_dir=args.data_dir,
-                    model_dir=args.model_dir,
-                    batch_size=args.batch_size,
-                    num_workers=args.num_workers,
-                    device=device,
-                )
+                if os.path.exists(out_path) and os.path.exists(labels_path):
+                    print(f"  [SKIP] {split}/{model_name} (already exists)")
+                    continue
 
-                torch.save(features, out_path)
-                print(f"    -> {out_path} [{features.shape[0]} x {features.shape[1]}]")
+                print(f"  [EXTRACT] {split}/{model_name}...")
+                try:
+                    features, labels = extract_features(
+                        model_name=model_name,
+                        dataset=dataset,
+                        split=split,
+                        data_dir=args.data_dir,
+                        model_dir=args.model_dir,
+                        batch_size=args.batch_size,
+                        num_workers=args.num_workers,
+                        device=device,
+                        val_ratio=args.validation_ratio,
+                        split_seed=args.split_seed,
+                    )
 
-                # Save labels once per dataset (same for all models)
-                labels_path = os.path.join(out_dir, "labels.pt")
-                if not labels_saved:
+                    torch.save(features, out_path)
+                    print(f"    -> {out_path} [{features.shape[0]} x {features.shape[1]}]")
                     torch.save(labels, labels_path)
-                    labels_saved = True
                     print(f"    -> {labels_path} [{labels.shape[0]}]")
-
-            except Exception as e:
-                print(f"    [FAIL] {model_name}: {e}")
-                continue
+                except Exception as e:
+                    print(f"    [FAIL] {split}/{model_name}: {e}")
+                    continue
 
     print("\n" + "=" * 60)
     print("Feature extraction complete!")

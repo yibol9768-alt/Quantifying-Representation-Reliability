@@ -29,7 +29,7 @@ project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(project_root))
 
 from src.models.extractor import FeatureExtractor
-from src.data.dataset import get_dataloaders
+from src.data.dataset import get_feature_split_dataloaders
 from src.analysis.cka import (
     compute_cka_matrix,
     compute_class_conditional_cka_matrix,
@@ -46,9 +46,17 @@ from src.analysis.model_selection import (
 
 def extract_features(
     model_type: str,
-    dataloader,
+    dataset: str,
+    data_dir: str,
     model_dir: str,
     device: str,
+    batch_size: int,
+    num_workers: int,
+    max_samples: int,
+    sample_seed: int,
+    selection_split: str,
+    validation_ratio: float,
+    split_seed: int,
     use_patches: bool = True,
     return_labels: bool = False,
 ):
@@ -62,6 +70,27 @@ def extract_features(
     """
     extractor = FeatureExtractor(model_type=model_type, model_dir=model_dir)
     extractor.eval().to(device)
+    split_loaders = get_feature_split_dataloaders(
+        dataset=dataset,
+        data_dir=data_dir,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        model_type=model_type,
+        val_ratio=validation_ratio,
+        split_seed=split_seed,
+    )
+    dataloader = split_loaders[selection_split]
+
+    if max_samples > 0 and len(dataloader.dataset) > max_samples:
+        generator = torch.Generator().manual_seed(sample_seed)
+        subset_indices = torch.randperm(len(dataloader.dataset), generator=generator)[:max_samples]
+        dataloader = DataLoader(
+            Subset(dataloader.dataset, subset_indices.tolist()),
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            pin_memory=True,
+        )
 
     all_features = []
     all_labels = []
@@ -189,6 +218,10 @@ def main():
                         help="PCA target dim for patch tokens before CKA (0=no PCA)")
     parser.add_argument("--sample_seed", type=int, default=42,
                         help="Random seed for dataset subsampling when --max_samples > 0")
+    parser.add_argument("--selection_split", type=str, default="train",
+                        choices=["train", "val", "test"])
+    parser.add_argument("--validation_ratio", type=float, default=0.2)
+    parser.add_argument("--split_seed", type=int, default=42)
     parser.add_argument("--compute_class_conditional", action="store_true",
                         help="Also compute class-conditional CKA matrices as a "
                              "label-conditioned similarity diagnostic")
@@ -214,6 +247,7 @@ def main():
     print(f"Datasets: {datasets}")
     print(f"Models: {models}")
     print(f"Device: {args.device}")
+    print(f"Selection split: {args.selection_split}")
     print(f"Feature type: {'patch tokens (last layer)' if args.use_patches else 'pooled [CLS]'}")
     print(f"Max samples: {args.max_samples if args.max_samples > 0 else 'all'}")
     print(f"PCA dim: {args.pca_dim if args.pca_dim > 0 else 'disabled'}")
@@ -230,35 +264,6 @@ def main():
     for dataset in datasets:
         print(f"--- Dataset: {dataset} ---")
 
-        # Load full training data (no fewshot)
-        train_loader, _ = get_dataloaders(
-            dataset=dataset,
-            data_dir=args.data_dir,
-            batch_size=args.batch_size,
-            num_workers=args.num_workers,
-            model_type="mae",  # transforms don't matter much for CKA
-        )
-
-        # CKA requires sample-aligned features across models, so use a
-        # deterministic non-shuffled loader regardless of training defaults.
-        analysis_dataset = train_loader.dataset
-
-        # Subsample at the dataset level before feature extraction to avoid
-        # materializing huge patch-token tensors for the full training set.
-        if args.max_samples > 0 and len(analysis_dataset) > args.max_samples:
-            generator = torch.Generator().manual_seed(args.sample_seed)
-            subset_indices = torch.randperm(len(analysis_dataset), generator=generator)[:args.max_samples]
-            analysis_dataset = Subset(analysis_dataset, subset_indices.tolist())
-            print(f"  Using shared subset: {args.max_samples} samples")
-
-        train_loader = DataLoader(
-            analysis_dataset,
-            batch_size=args.batch_size,
-            shuffle=False,
-            num_workers=args.num_workers,
-            pin_memory=True,
-        )
-
         # Extract features per model
         features_dict = {}
         labels = None
@@ -266,12 +271,34 @@ def main():
             print(f"  Extracting features: {model_name}...", end=" ", flush=True)
             if labels is None:
                 feat, labels = extract_features(
-                    model_name, train_loader, args.model_dir, args.device,
+                    model_type=model_name,
+                    dataset=dataset,
+                    data_dir=args.data_dir,
+                    model_dir=args.model_dir,
+                    device=args.device,
+                    batch_size=args.batch_size,
+                    num_workers=args.num_workers,
+                    max_samples=args.max_samples,
+                    sample_seed=args.sample_seed,
+                    selection_split=args.selection_split,
+                    validation_ratio=args.validation_ratio,
+                    split_seed=args.split_seed,
                     use_patches=args.use_patches, return_labels=True,
                 )
             else:
                 feat = extract_features(
-                    model_name, train_loader, args.model_dir, args.device,
+                    model_type=model_name,
+                    dataset=dataset,
+                    data_dir=args.data_dir,
+                    model_dir=args.model_dir,
+                    device=args.device,
+                    batch_size=args.batch_size,
+                    num_workers=args.num_workers,
+                    max_samples=args.max_samples,
+                    sample_seed=args.sample_seed,
+                    selection_split=args.selection_split,
+                    validation_ratio=args.validation_ratio,
+                    split_seed=args.split_seed,
                     use_patches=args.use_patches,
                 )
 

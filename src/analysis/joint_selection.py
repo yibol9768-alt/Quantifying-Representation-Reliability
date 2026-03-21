@@ -164,6 +164,9 @@ def joint_greedy_selection(
     name_to_idx = {n: i for i, n in enumerate(model_names)}
 
     # Start model: highest relevance or specified
+    if start_model is not None and start_model not in model_names:
+        raise ValueError(f"start_model '{start_model}' not found in model_names")
+
     if start_model is None:
         start_model = max(
             (m for m in model_names if m in relevance),
@@ -240,6 +243,9 @@ def conditional_joint_greedy_selection(
         C(m, S) = avg pairwise conditional term to selected set
     """
     name_to_idx = {n: i for i, n in enumerate(model_names)}
+
+    if start_model is not None and start_model not in model_names:
+        raise ValueError(f"start_model '{start_model}' not found in model_names")
 
     if start_model is None:
         start_model = max(
@@ -330,9 +336,13 @@ def compare_orderings(
     results["relevance_only"] = rel_order
 
     # Diversity only (CKA greedy from clip)
+    div_start = "clip" if "clip" in model_names else max(
+        (m for m in model_names if m in relevance),
+        key=lambda m: relevance[m],
+    )
     div_order, _ = joint_greedy_selection(
         cka_matrix, model_names, relevance, alpha=0.0, beta=1.0,
-        start_model="clip",
+        start_model=div_start,
     )
     results["diversity_only"] = div_order
 

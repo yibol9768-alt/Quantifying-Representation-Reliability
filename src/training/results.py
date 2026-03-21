@@ -23,7 +23,7 @@ def init_result_tracker(args, config, training_mode: str, cache_root=None):
     results_root = Path(args.results_dir)
     results_root.mkdir(parents=True, exist_ok=True)
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = getattr(args, "run_stamp", datetime.now().strftime("%Y%m%d_%H%M%S"))
     run_name = args.run_name if args.run_name else f"{args.run_basename}_{timestamp}"
     json_path = results_root / f"{run_name}.json"
     csv_path = results_root / f"{run_name}.csv"
@@ -46,6 +46,13 @@ def init_result_tracker(args, config, training_mode: str, cache_root=None):
         "data_dir": args.data_dir,
         "cache_dir": args.cache_dir,
         "cache_root": str(cache_root.resolve()) if cache_root is not None else None,
+        "protocol": {
+            "validation_ratio": float(getattr(args, "validation_ratio", 0.0)),
+            "validation_seed": int(getattr(args, "validation_seed", 42)),
+            "selection_split": "train",
+            "selection_eval_split": "val",
+            "final_eval_split": "test",
+        },
         "config": vars(args),
         "history": [],
         "summary": {},
@@ -71,9 +78,12 @@ def flush_result_tracker(tracker):
         "epoch",
         "train_loss",
         "train_acc",
+        "val_loss",
+        "val_acc",
         "test_loss",
         "test_acc",
-        "best_acc",
+        "best_val_acc",
+        "best_test_acc",
         "is_best",
         "lr",
     ]
@@ -90,9 +100,12 @@ def record_epoch_result(
     epoch: int,
     train_loss: float,
     train_acc: float,
+    val_loss: float,
+    val_acc: float,
     test_loss: float,
     test_acc: float,
-    best_acc: float,
+    best_val_acc: float,
+    best_test_acc: float,
     is_best: bool,
     optimizer,
 ):
@@ -101,9 +114,12 @@ def record_epoch_result(
         "epoch": int(epoch),
         "train_loss": float(train_loss),
         "train_acc": float(train_acc),
+        "val_loss": float(val_loss),
+        "val_acc": float(val_acc),
         "test_loss": float(test_loss),
         "test_acc": float(test_acc),
-        "best_acc": float(best_acc),
+        "best_val_acc": float(best_val_acc),
+        "best_test_acc": float(best_test_acc),
         "is_best": bool(is_best),
         "lr": get_learning_rate(optimizer),
     })
@@ -114,7 +130,8 @@ def record_epoch_result(
 def finalize_result_tracker(
     tracker,
     *,
-    best_acc: float,
+    best_val_acc: float,
+    best_test_acc: float,
     best_epoch: int,
     checkpoint_path=None,
     cache_root=None,
@@ -124,7 +141,8 @@ def finalize_result_tracker(
     tracker["payload"]["status"] = "completed"
     tracker["payload"]["completed_at"] = datetime.now().isoformat(timespec="seconds")
     tracker["payload"]["summary"] = {
-        "best_acc": float(best_acc),
+        "best_val_acc": float(best_val_acc),
+        "best_test_acc": float(best_test_acc),
         "best_epoch": int(best_epoch),
         "checkpoint_path": str(checkpoint_path) if checkpoint_path is not None else None,
         "cache_root": str(cache_root.resolve()) if cache_root is not None else None,

@@ -10,7 +10,7 @@ from pathlib import Path
 
 from src.models.fusion import get_extractor
 from src.models.classifier import MLPClassifier
-from src.data.dataset import get_dataloaders
+from src.data.dataset import get_train_val_test_dataloaders
 from src.training.cache import (
     CachedShardDataset,
     GroupedShardSampler,
@@ -46,11 +46,12 @@ def build_cached_loaders(args, extractor, device, use_fp16):
     """Build disk-backed offline caches and dataloaders."""
     cache_root = Path(args.cache_dir) / args.cache_name
     train_split_dir = cache_root / "train"
+    val_split_dir = cache_root / "val"
     test_split_dir = cache_root / "test"
 
     print(f"\nLoading dataset {args.dataset}...")
     fewshot = not args.disable_fewshot
-    image_train_loader, image_test_loader = get_dataloaders(
+    image_train_loader, image_val_loader, image_test_loader = get_train_val_test_dataloaders(
         args.dataset,
         args.data_dir,
         args.batch_size,
@@ -59,6 +60,8 @@ def build_cached_loaders(args, extractor, device, use_fp16):
         fewshot_min=args.fewshot_min if fewshot else None,
         fewshot_max=args.fewshot_max if fewshot else None,
         seed=args.seed,
+        val_ratio=args.validation_ratio,
+        split_seed=args.validation_seed,
     )
 
     storage_dtype = torch.float16 if args.cache_dtype == "fp16" else torch.float32
@@ -75,7 +78,20 @@ def build_cached_loaders(args, extractor, device, use_fp16):
         recache=args.rebuild_cache,
     )
 
-    print(f"\n[Step 2/3] Building test cache at {test_split_dir}")
+    if image_val_loader is not None:
+        print(f"\n[Step 2/4] Building val cache at {val_split_dir}")
+        build_split_cache(
+            extractor=extractor,
+            dataloader=image_val_loader,
+            split_dir=val_split_dir,
+            split="val",
+            device=device,
+            storage_dtype=storage_dtype,
+            use_fp16=use_fp16,
+            recache=args.rebuild_cache,
+        )
+
+    print(f"\n[Step 3/4] Building test cache at {test_split_dir}")
     build_split_cache(
         extractor=extractor,
         dataloader=image_test_loader,
@@ -92,8 +108,10 @@ def build_cached_loaders(args, extractor, device, use_fp16):
         torch.cuda.empty_cache()
 
     train_dataset = CachedShardDataset(train_split_dir)
+    val_dataset = CachedShardDataset(val_split_dir) if image_val_loader is not None else None
     test_dataset = CachedShardDataset(test_split_dir)
     train_sampler = GroupedShardSampler(train_dataset, shuffle=True, seed=args.seed)
+    val_sampler = GroupedShardSampler(val_dataset, shuffle=False, seed=args.seed) if val_dataset is not None else None
     test_sampler = GroupedShardSampler(test_dataset, shuffle=False, seed=args.seed)
 
     train_loader = torch.utils.data.DataLoader(
@@ -103,6 +121,15 @@ def build_cached_loaders(args, extractor, device, use_fp16):
         num_workers=0,
         pin_memory=device.type == "cuda",
     )
+    val_loader = None
+    if val_dataset is not None and val_sampler is not None:
+        val_loader = torch.utils.data.DataLoader(
+            val_dataset,
+            batch_size=args.batch_size,
+            sampler=val_sampler,
+            num_workers=0,
+            pin_memory=device.type == "cuda",
+        )
     test_loader = torch.utils.data.DataLoader(
         test_dataset,
         batch_size=args.batch_size,
@@ -111,7 +138,7 @@ def build_cached_loaders(args, extractor, device, use_fp16):
         pin_memory=device.type == "cuda",
     )
 
-    return train_loader, test_loader, cache_root
+    return train_loader, val_loader, test_loader, cache_root
 
 
 def _forward_step(extractor, inputs, use_cache, device):
@@ -129,6 +156,40 @@ def print_gpu_usage():
         allocated = torch.cuda.memory_allocated() / 1024**3
         reserved = torch.cuda.memory_reserved() / 1024**3
         print(f"GPU Memory: {allocated:.2f}GB used / {reserved:.2f}GB reserved")
+
+
+def _evaluate_classifier(extractor, classifier, dataloader, criterion, use_cache, device, use_fp16):
+    """Evaluate classifier on one dataloader."""
+    if dataloader is None:
+        return 0.0, 0.0
+
+    loss_total = 0.0
+    correct = 0
+    total = 0
+
+    with torch.no_grad():
+        for inputs, labels in dataloader:
+            labels = labels.to(device, non_blocking=True)
+
+            if use_fp16:
+                with autocast():
+                    features = _forward_step(extractor, inputs, use_cache, device)
+                    outputs = classifier(features)
+                    loss = criterion(outputs, labels)
+            else:
+                features = _forward_step(extractor, inputs, use_cache, device)
+                outputs = classifier(features)
+                loss = criterion(outputs, labels)
+
+            loss_total += loss.item() * labels.size(0)
+            _, predicted = outputs.max(1)
+            total += labels.size(0)
+            correct += predicted.eq(labels).sum().item()
+
+    return (
+        loss_total / max(total, 1),
+        100.0 * correct / max(total, 1),
+    )
 
 
 def train(args, config):
@@ -168,13 +229,13 @@ def train(args, config):
     # Build data loaders
     cache_root = None
     if use_cache:
-        train_loader, test_loader, cache_root = build_cached_loaders(
+        train_loader, val_loader, test_loader, cache_root = build_cached_loaders(
             args, extractor, device, use_fp16
         )
     else:
         fewshot = not args.disable_fewshot
         print(f"\nLoading dataset {args.dataset}...")
-        train_loader, test_loader = get_dataloaders(
+        train_loader, val_loader, test_loader = get_train_val_test_dataloaders(
             args.dataset,
             args.data_dir,
             args.batch_size,
@@ -183,6 +244,8 @@ def train(args, config):
             fewshot_min=args.fewshot_min if fewshot else None,
             fewshot_max=args.fewshot_max if fewshot else None,
             seed=args.seed,
+            val_ratio=args.validation_ratio,
+            split_seed=args.validation_seed,
         )
 
     result_tracker = init_result_tracker(
@@ -212,7 +275,8 @@ def train(args, config):
     scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs)
     criterion = nn.CrossEntropyLoss()
 
-    best_acc = -1.0
+    best_val_acc = -1.0
+    best_test_acc = -1.0
     best_epoch = 0
     best_checkpoint_path = None
 
@@ -295,37 +359,20 @@ def train(args, config):
         # Evaluate
         classifier.eval()
         extractor.eval()
-        test_loss = 0.0
-        test_correct = 0
-        test_total = 0
+        val_loss, val_acc = _evaluate_classifier(
+            extractor, classifier, val_loader, criterion, use_cache, device, use_fp16,
+        )
+        test_loss, test_acc = _evaluate_classifier(
+            extractor, classifier, test_loader, criterion, use_cache, device, use_fp16,
+        )
 
-        with torch.no_grad():
-            for inputs, labels in test_loader:
-                labels = labels.to(device, non_blocking=True)
+        train_loss = train_loss / max(train_total, 1)
+        train_acc = 100. * train_correct / max(train_total, 1)
 
-                if use_fp16:
-                    with autocast():
-                        features = _forward_step(extractor, inputs, use_cache, device)
-                        outputs = classifier(features)
-                        loss = criterion(outputs, labels)
-                else:
-                    features = _forward_step(extractor, inputs, use_cache, device)
-                    outputs = classifier(features)
-                    loss = criterion(outputs, labels)
-
-                test_loss += loss.item() * labels.size(0)
-                _, predicted = outputs.max(1)
-                test_total += labels.size(0)
-                test_correct += predicted.eq(labels).sum().item()
-
-        train_loss = train_loss / train_total
-        test_loss = test_loss / test_total
-        train_acc = 100. * train_correct / train_total
-        test_acc = 100. * test_correct / test_total
-
-        is_best = test_acc > best_acc
-        if test_acc > best_acc:
-            best_acc = test_acc
+        is_best = val_acc > best_val_acc
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            best_test_acc = test_acc
             best_epoch = epoch + 1
             best_checkpoint_path = save_training_checkpoint(
                 args.checkpoint_name, classifier, extractor,
@@ -336,14 +383,20 @@ def train(args, config):
             epoch=epoch + 1,
             train_loss=train_loss,
             train_acc=train_acc,
+            val_loss=val_loss,
+            val_acc=val_acc,
             test_loss=test_loss,
             test_acc=test_acc,
-            best_acc=best_acc,
+            best_val_acc=best_val_acc,
+            best_test_acc=best_test_acc,
             is_best=is_best,
             optimizer=optimizer,
         )
 
-        print(f"Epoch {epoch+1}: Train {train_acc:.2f}% | Test {test_acc:.2f}% | Best {best_acc:.2f}%")
+        print(
+            f"Epoch {epoch+1}: Train {train_acc:.2f}% | "
+            f"Val {val_acc:.2f}% | Test {test_acc:.2f}% | Best Val {best_val_acc:.2f}%"
+        )
 
     # Cleanup and finalize
     cache_removed = False
@@ -354,10 +407,11 @@ def train(args, config):
 
     finalize_result_tracker(
         result_tracker,
-        best_acc=best_acc,
+        best_val_acc=best_val_acc,
+        best_test_acc=best_test_acc,
         best_epoch=best_epoch,
         checkpoint_path=best_checkpoint_path,
         cache_root=cache_root if use_cache else None,
         cache_removed=cache_removed,
     )
-    return best_acc
+    return best_test_acc

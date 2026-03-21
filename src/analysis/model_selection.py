@@ -111,6 +111,12 @@ def max_diversity_selection(
         List of k selected model names.
     """
     n = len(model_names)
+    if k <= 0:
+        return []
+    if k == 1:
+        avg_cka = cka_matrix.mean(axis=1)
+        best_idx = int(np.argmin(avg_cka))
+        return [model_names[best_idx]]
     if k >= n:
         return list(model_names)
 

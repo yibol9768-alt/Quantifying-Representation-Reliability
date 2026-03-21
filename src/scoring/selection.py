@@ -67,7 +67,7 @@ def _normalize_scores(scores: Dict[str, float]) -> Dict[str, float]:
     vals = list(scores.values())
     lo, hi = min(vals), max(vals)
     if hi == lo:
-        return {k: 1.0 for k in scores}
+        return {k: 0.0 for k in scores}
     return {k: (v - lo) / (hi - lo) for k, v in scores.items()}
 
 
@@ -138,11 +138,17 @@ def greedy_select(
     if selection_method == "mrmr":
         selected = mrmr_select(features, labels, max_models=max_models)
         metadata["method_type"] = "information_theoretic"
+        metadata["relevance_method"] = None
+        metadata["redundancy_method"] = None
+        metadata["lambda_param"] = None
         return selected, metadata
 
     if selection_method == "jmi":
         selected = jmi_select(features, labels, max_models=max_models)
         metadata["method_type"] = "information_theoretic"
+        metadata["relevance_method"] = None
+        metadata["redundancy_method"] = None
+        metadata["lambda_param"] = None
         return selected, metadata
 
     if selection_method == "random":
@@ -177,7 +183,7 @@ def greedy_select(
         trace = []
 
         # First model: highest relevance
-        first = max(names, key=lambda m: norm_relevance[m])
+        first = max(sorted(names), key=lambda m: (norm_relevance[m], relevance[m], m))
         selected.append(first)
         remaining.remove(first)
         trace.append({
@@ -200,7 +206,9 @@ def greedy_select(
                 avg_red = float(np.mean(red_vals))
                 score = rel - lambda_param * avg_red
 
-                if score > best_score:
+                if score > best_score or (
+                    score == best_score and best_model is not None and m < best_model
+                ):
                     best_score = score
                     best_model = m
                     best_info = {
