@@ -693,20 +693,14 @@ S_k^{\mathrm{all}} = \{a_1,\dots,a_k\}.
 
 本节只保留当前已经完成的结果展示。\input{generated/current_selection_progress_note.tex}
 
-\subsection{当前完整快照}
+\subsection{主方法在 $k=1,\dots,10$ 下的结果}
 
-表~\ref{tab:current-selection-snapshot} 给出了截至 2026 年 3 月 23 日当前已完成数据集上的完整结果快照。为了保证比较公平，表中只保留了九种方法都已经完成的四个数据集：STL10、Pets、EuroSAT 和 DTD。每个单元格都报告该方法在对应数据集上、当前已完成的 $k=2,\dots,10$ 搜索范围内所达到的最佳测试准确率。
+表~\ref{tab:ours-k-1-to-10} 汇总了当前已完成数据集上，主方法 Ours (LogME+CKA) 在 $k=1,\dots,10$ 下的测试准确率。这里的 $k$ 表示按排序依次取前 $k$ 个模型进入融合器，因此该表直接回答“模型数增加后，性能如何变化”。
 
-\input{generated/current_selection_snapshot_table.tex}
+\input{generated/ours_k_1_to_10_table.tex}
 
-图~\ref{fig:current-selection-bar} 用更直接的柱状图汇总四个已完成数据集上的三类结果：当前两项方法、该数据集上当前最强的 baseline，以及完全不做选择的 All Models。对于当前这版阶段性分析，柱状图比折线图更合适，因为我们这里要强调的是“横向方法比较”，而不是完整的 scaling trajectory。
-
-\begin{figure}[t]
-\centering
-\includegraphics[width=\textwidth]{generated/current_selection_bar_chart.pdf}
-\caption{Current snapshot on the completed datasets. For each dataset, we compare the current two-term method, the strongest finished baseline, and the no-selection All Models result using their best finished test accuracy.}
-\label{fig:current-selection-bar}
-\end{figure}
+\paragraph{实验结论}
+从表~\ref{tab:ours-k-1-to-10} 可以看到，性能并不会随着 $k$ 单调上升。当前四个已完成数据集上的最优 $k$ 分别为 STL10 上的 $7$、Pets 上的 $1$、EuroSAT 上的 $6$ 和 DTD 上的 $7$。这说明在冻结特征融合设定下，简单地持续增加模型数并不能保证更高的测试准确率；更合理的结论是，不同数据集通常存在各自的最优模型规模，而最优点往往出现在中等规模的前缀子集，而不是固定地取到最大 $k$。
 
 \section{哪些地方是严格证明，哪些地方只是带条件或近似}
 
