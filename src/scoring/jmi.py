@@ -14,16 +14,25 @@ In practice, we approximate I(F_m, F_j; Y) = I(F_m; Y) + I(F_j; Y) - I(F_j; F_m)
 """
 
 import numpy as np
+import torch
 from typing import Dict, List, Optional
+
+from ._torch_backend import run_with_fallback
 
 
 def _gaussian_entropy(X: np.ndarray, reg: float = 1e-3) -> float:
     """Gaussian entropy H(X) = 0.5 * log det(2*pi*e * Sigma)."""
-    N, d = X.shape
-    Xc = X - X.mean(axis=0, keepdims=True)
-    cov = (Xc.T @ Xc) / max(N - 1, 1) + reg * np.eye(d)
-    _, logdet = np.linalg.slogdet(cov)
-    return 0.5 * (d * np.log(2 * np.pi * np.e) + logdet)
+    def _impl(device: torch.device, dtype: torch.dtype) -> float:
+        Xt = torch.as_tensor(X, dtype=dtype, device=device)
+        N, d = Xt.shape
+        Xc = Xt - Xt.mean(dim=0, keepdim=True)
+        cov = (Xc.transpose(0, 1) @ Xc) / max(N - 1, 1) + reg * torch.eye(d, dtype=dtype, device=device)
+        _, logdet = torch.linalg.slogdet(cov)
+        const = torch.tensor(2 * np.pi * np.e, dtype=dtype, device=device)
+        val = 0.5 * (d * torch.log(const) + logdet)
+        return float(val.item())
+
+    return run_with_fallback(_impl)
 
 
 def _joint_mi_with_label(
@@ -38,22 +47,28 @@ def _joint_mi_with_label(
     where Z is discrete (labels), so we use:
     I(X, Y; Z) = H(X, Y) - H(X, Y | Z)
     """
-    N = X.shape[0]
-    XY = np.concatenate([X, Y_feat], axis=1)
+    def _impl(device: torch.device, dtype: torch.dtype) -> float:
+        Xt = torch.as_tensor(X, dtype=dtype, device=device)
+        Yt = torch.as_tensor(Y_feat, dtype=dtype, device=device)
+        labels_t = torch.as_tensor(labels, device=device)
+        N = int(Xt.shape[0])
+        XY = torch.cat([Xt, Yt], dim=1)
 
-    h_xy = _gaussian_entropy(XY, reg)
+        h_xy = _gaussian_entropy_torch(XY, reg)
+        classes = torch.unique(labels_t)
+        h_xy_given_z = torch.zeros((), dtype=dtype, device=device)
 
-    classes = np.unique(labels)
-    h_xy_given_z = 0.0
-    for c in classes:
-        mask = labels == c
-        n_c = mask.sum()
-        if n_c < 2:
-            continue
-        p_c = n_c / N
-        h_xy_given_z += p_c * _gaussian_entropy(XY[mask], reg)
+        for c in classes:
+            mask = labels_t == c
+            n_c = int(mask.sum())
+            if n_c < 2:
+                continue
+            p_c = n_c / N
+            h_xy_given_z = h_xy_given_z + p_c * _gaussian_entropy_torch(XY[mask], reg)
 
-    return float(max(h_xy - h_xy_given_z, 0.0))
+        return float(torch.clamp(h_xy - h_xy_given_z, min=0.0).item())
+
+    return run_with_fallback(_impl)
 
 
 def jmi_select(
@@ -145,7 +160,23 @@ def jmi_select(
 
 def _pca(X: np.ndarray, k: int) -> np.ndarray:
     """Simple PCA to k dimensions."""
-    X = X - X.mean(axis=0, keepdims=True)
-    U, S, _ = np.linalg.svd(X, full_matrices=False)
-    k = min(k, U.shape[1])
-    return U[:, :k] * S[:k]
+    def _impl(device: torch.device, dtype: torch.dtype) -> np.ndarray:
+        Xt = torch.as_tensor(X, dtype=dtype, device=device)
+        Xt = Xt - Xt.mean(dim=0, keepdim=True)
+        U, S, _ = torch.linalg.svd(Xt, full_matrices=False)
+        kk = min(k, int(U.shape[1]))
+        reduced = U[:, :kk] * S[:kk]
+        return reduced.cpu().numpy().astype(np.float64, copy=False)
+
+    return run_with_fallback(_impl)
+
+
+def _gaussian_entropy_torch(X: torch.Tensor, reg: float = 1e-3) -> torch.Tensor:
+    """Torch Gaussian entropy helper for batched JMI kernels."""
+    N, d = X.shape
+    Xc = X - X.mean(dim=0, keepdim=True)
+    cov = (Xc.transpose(0, 1) @ Xc) / max(N - 1, 1)
+    cov = cov + reg * torch.eye(d, dtype=X.dtype, device=X.device)
+    _, logdet = torch.linalg.slogdet(cov)
+    const = torch.tensor(2 * np.pi * np.e, dtype=X.dtype, device=X.device)
+    return 0.5 * (d * torch.log(const) + logdet)

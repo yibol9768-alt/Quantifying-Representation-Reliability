@@ -29,17 +29,92 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from src.scoring.selection import greedy_select
 
 
-SELECTION_CONFIGS = [
-    # (name, relevance, redundancy, selection_method, lambda)
-    ("Ours_LogME_CKA", "logme", "cka", "relevance_redundancy", 1.0),
-    ("GBC_CKA", "gbc", "cka", "relevance_redundancy", 1.0),
-    ("HScore_CKA", "hscore", "cka", "relevance_redundancy", 1.0),
-    ("LogME_SVCCA", "logme", "svcca", "relevance_redundancy", 1.0),
-    ("mRMR", "logme", "cka", "mrmr", 1.0),
-    ("JMI", "logme", "cka", "jmi", 1.0),
-    ("Relevance_Only", "logme", "cka", "relevance_only", 1.0),
-    ("Random", "logme", "cka", "random", 1.0),
+BASE_SELECTION_CONFIGS = [
+    {
+        "name": "Ours_LogME_CKA",
+        "relevance": "logme",
+        "redundancy": "cka",
+        "selection": "relevance_redundancy",
+        "lambda": 1.0,
+    },
+    {
+        "name": "GBC_CKA",
+        "relevance": "gbc",
+        "redundancy": "cka",
+        "selection": "relevance_redundancy",
+        "lambda": 1.0,
+    },
+    {
+        "name": "HScore_CKA",
+        "relevance": "hscore",
+        "redundancy": "cka",
+        "selection": "relevance_redundancy",
+        "lambda": 1.0,
+    },
+    {
+        "name": "LogME_SVCCA",
+        "relevance": "logme",
+        "redundancy": "svcca",
+        "selection": "relevance_redundancy",
+        "lambda": 1.0,
+    },
+    {
+        "name": "mRMR",
+        "relevance": "logme",
+        "redundancy": "cka",
+        "selection": "mrmr",
+        "lambda": 1.0,
+    },
+    {
+        "name": "JMI",
+        "relevance": "logme",
+        "redundancy": "cka",
+        "selection": "jmi",
+        "lambda": 1.0,
+    },
+    {
+        "name": "Relevance_Only",
+        "relevance": "logme",
+        "redundancy": "cka",
+        "selection": "relevance_only",
+        "lambda": 1.0,
+    },
+    {
+        "name": "Random",
+        "relevance": "logme",
+        "redundancy": "cka",
+        "selection": "random",
+        "lambda": 1.0,
+    },
 ]
+
+
+def build_selection_configs(args):
+    configs = list(BASE_SELECTION_CONFIGS)
+    if args.include_third_term:
+        configs.append(
+            {
+                "name": "Ours_LogME_CKA_3Term",
+                "relevance": "logme",
+                "redundancy": "cka",
+                "selection": "three_term_low_order",
+                "lambda": 1.0,
+                "eta_cond": args.eta_cond,
+                "conditional_pca_dim": args.conditional_pca_dim,
+                "conditional_min_class_samples": args.conditional_min_class_samples,
+                "conditional_reg": args.conditional_reg,
+            }
+        )
+
+    if not args.methods:
+        return configs
+
+    requested = {name.strip() for name in args.methods.split(",") if name.strip()}
+    filtered = [cfg for cfg in configs if cfg["name"] in requested]
+    missing = sorted(requested - {cfg["name"] for cfg in configs} - {"All_Models"})
+    if missing:
+        raise ValueError(f"Unknown methods requested: {missing}")
+    return filtered
 
 
 def _flatten_feature_array(feat: torch.Tensor) -> np.ndarray:
@@ -75,12 +150,17 @@ def load_features(data_root: str, dataset: str, split: str):
     return features, labels
 
 
-def run_comparison(features, labels, max_models):
+def run_comparison(features, labels, max_models, selection_configs, include_all_models=True):
     """Run all selection methods and return results."""
     results = {}
     all_models = sorted(features.keys())
 
-    for config_name, rel, red, sel, lam in SELECTION_CONFIGS:
+    for cfg in selection_configs:
+        config_name = cfg["name"]
+        rel = cfg["relevance"]
+        red = cfg["redundancy"]
+        sel = cfg["selection"]
+        lam = cfg["lambda"]
         print(f"  Running {config_name}...", end=" ", flush=True)
         t0 = time.time()
 
@@ -93,6 +173,10 @@ def run_comparison(features, labels, max_models):
                 selection_method=sel,
                 max_models=max_models,
                 lambda_param=lam,
+                eta_cond=cfg.get("eta_cond", 1.0),
+                conditional_pca_dim=cfg.get("conditional_pca_dim", 32),
+                conditional_min_class_samples=cfg.get("conditional_min_class_samples", 8),
+                conditional_reg=cfg.get("conditional_reg", 1e-3),
             )
             elapsed = time.time() - t0
             results[config_name] = {
@@ -103,6 +187,10 @@ def run_comparison(features, labels, max_models):
                     "redundancy": red,
                     "selection": sel,
                     "lambda": lam,
+                    "eta_cond": cfg.get("eta_cond"),
+                    "conditional_pca_dim": cfg.get("conditional_pca_dim"),
+                    "conditional_min_class_samples": cfg.get("conditional_min_class_samples"),
+                    "conditional_reg": cfg.get("conditional_reg"),
                 },
             }
             print(f"done ({elapsed:.1f}s) -> {selected}")
@@ -110,12 +198,12 @@ def run_comparison(features, labels, max_models):
             print(f"FAILED: {e}")
             results[config_name] = {"error": str(e)}
 
-    # Add "All Models" baseline
-    results["All_Models"] = {
-        "selected": all_models,
-        "time_seconds": 0.0,
-        "config": {"selection": "all"},
-    }
+    if include_all_models:
+        results["All_Models"] = {
+            "selected": all_models,
+            "time_seconds": 0.0,
+            "config": {"selection": "all"},
+        }
 
     return results
 
@@ -133,10 +221,27 @@ def main():
     parser.add_argument("--selection_split", type=str, default="train",
                         choices=["train", "val", "test"],
                         help="Dataset split used to compute selection statistics")
+    parser.add_argument("--methods", type=str, default=None,
+                        help="Optional comma-separated subset of method names to run")
+    parser.add_argument("--include_third_term", action="store_true",
+                        help="Include the low-order three-term ablation variant")
+    parser.add_argument("--eta_cond", type=float, default=1.0,
+                        help="Weight on the third conditional term")
+    parser.add_argument("--conditional_pca_dim", type=int, default=32,
+                        help="PCA dimension for pairwise conditional MI")
+    parser.add_argument("--conditional_min_class_samples", type=int, default=8,
+                        help="Minimum class size for pairwise conditional MI")
+    parser.add_argument("--conditional_reg", type=float, default=1e-3,
+                        help="Covariance ridge for pairwise conditional MI")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
     datasets = [d.strip() for d in args.datasets.split(",")]
+    selection_configs = build_selection_configs(args)
+    requested = None if not args.methods else {
+        name.strip() for name in args.methods.split(",") if name.strip()
+    }
+    include_all_models = requested is None or "All_Models" in requested
 
     all_results = {}
 
@@ -153,7 +258,13 @@ def main():
             print(f"  SKIP: {e}")
             continue
 
-        results = run_comparison(features, labels, args.max_models)
+        results = run_comparison(
+            features,
+            labels,
+            args.max_models,
+            selection_configs=selection_configs,
+            include_all_models=include_all_models,
+        )
         results["_protocol"] = {
             "selection_split": args.selection_split,
             "selection_eval_split": "val",

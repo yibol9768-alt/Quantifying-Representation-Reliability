@@ -4,6 +4,7 @@
 \usepackage{amssymb}
 \usepackage{amsthm}
 \usepackage{bm}
+\usepackage{graphicx}
 \usepackage{hyperref}
 
 \newtheorem{theorem}{定理}
@@ -405,6 +406,308 @@ s(X, Z) = s(Y, Z).
 这个结果说明，过强的不变性会使高维表示相似度退化。CKA 仅保持对正交变换和各向同性缩放的不变性，因此比 CCA 一类完全可逆不变的统计量更适合作为高维特征冗余的代理。不过仍需明确：CKA 只是冗余代理，不是互信息估计器。
 \end{remark}
 
+\section{实验协议与代码实现对应}
+
+\paragraph{数据协议}
+当前代码实现采用严格的 train/val/test 三段协议。模型排序所需的统计量只在目标任务的训练部分上估计；验证集只用于选择模型子集、选择超参数以及决定最终 checkpoint；测试集只在所有选择步骤完成后用于一次性最终报告。因此，测试集标签不会再进入模型排序或 checkpoint 选择流程。
+
+\paragraph{方法主线}
+实现上区分两条分支：
+\begin{itemize}
+    \item 两项分支是主方法：使用 $\widehat R$ 与 $\widehat D$ 构造排序分数，作为默认排序策略；
+    \item 三项分支是扩展方法：在两项主线之外，额外加入 pairwise low-order conditional term，用于补充验证第三项是否能带来额外收益。
+\end{itemize}
+
+\paragraph{当前主实验比较的方法}
+当前正式多数据集实验比较的是九种模型选择策略，它们先在训练集特征上给出排序，再在统一融合器下搜索最优模型数。具体包括：
+\begin{itemize}
+    \item \textbf{Ours (LogME+CKA)}：以 LogME 作为任务相关性代理，以 CKA 作为冗余代理，按 relevance-redundancy 贪心准则排序；
+    \item \textbf{GBC+CKA} 与 \textbf{H-Score+CKA}：保留相同的冗余项，只将相关性代理分别替换为 GBC 与 H-Score；
+    \item \textbf{LogME+SVCCA}：保留 LogME 相关性项，但将冗余代理替换为 SVCCA，用于比较不同表示相似度统计量的影响；
+    \item \textbf{mRMR} 与 \textbf{JMI}：作为经典信息论特征选择基线，对应传统 relevance-redundancy 家族的代表方法；
+    \item \textbf{Relevance Only}：只按单模型相关性排序，不显式惩罚模型间冗余；
+    \item \textbf{Random}：随机给出模型顺序，用作弱基线；
+    \item \textbf{All Models}：不做精细排序，而是把全部候选模型依次纳入，用作“只堆模型不做选择”的对照组。
+\end{itemize}
+因此，当前经验部分真正回答的问题不是“某一个融合器是否最优”，而是：在固定融合训练协议下，哪一种模型选择策略更能稳定找到高质量的模型子集。
+
+\paragraph{第三项的代码化版本与消融定位}
+除主表中的九种方法外，代码中还额外实现了一个不并入主表的三项消融版本，用于专门回答“第三项是否重要”。它仍然以 LogME 作为相关性代理、以 CKA 作为冗余代理，但在第二项之外显式加入类条件修正项的低阶近似。记
+\[
+C_{\mathrm{pair}}(m, S_{t-1})
+= \frac{1}{|S_{t-1}|}\sum_{j \in S_{t-1}} \widehat I(F_m; F_j \mid Y),
+\]
+其中 $\widehat I(F_m; F_j \mid Y)$ 是在类条件高斯假设与 PCA 降维下得到的 pairwise conditional MI 估计。则第三项消融版本的打分写为
+\[
+\mathrm{Score}_{\mathrm{3term}}(m \mid S_{t-1})
+= \bar R_{\mathrm{LogME}}(m)
+- \lambda \bar D_{\mathrm{CKA}}(m, S_{t-1})
++ \eta C_{\mathrm{pair}}(m, S_{t-1}).
+\]
+本文将它作为 \emph{ablation variant}，而不是主实验默认方法：主实验先比较两项主线是否已经足够稳定；若需要进一步验证第三项是否带来额外收益，再单独运行这一三项版本并与两项版本做一对一对比。
+
+\paragraph{九种方法的统一数学形式}
+设候选模型池为 $\mathcal M$，第 $t$ 步已选集合为 $S_{t-1}$，剩余候选集合为
+\[
+U_{t-1} = \mathcal M \setminus S_{t-1}.
+\]
+记模型 $m$ 在当前目标任务训练集上的冻结特征矩阵为
+\[
+F_m \in \mathbb R^{n \times d_m},
+\]
+标签向量为 $y \in \{1,\dots,C\}^n$。对 relevance-redundancy 家族的方法，代码先计算每个模型的相关性分数 $R(m)$，再做 min-max 归一化：
+\[
+\bar R(m)
+= \frac{R(m) - \min_{j \in \mathcal M} R(j)}
+       {\max_{j \in \mathcal M} R(j) - \min_{j \in \mathcal M} R(j)}.
+\]
+若分母为零，则所有模型的归一化相关性都置为 $0$。对任意冗余统计量 $\rho(\cdot,\cdot)$，定义候选模型相对已选集合的平均冗余为
+\[
+\bar D_\rho(m, S_{t-1})
+= \frac{1}{|S_{t-1}|}\sum_{j \in S_{t-1}} \rho(F_m, F_j),
+\qquad |S_{t-1}| \ge 1.
+\]
+于是统一的贪心打分写成
+\[
+\mathrm{Score}_{q,\rho}(m \mid S_{t-1})
+= \bar R_q(m) - \lambda \bar D_\rho(m, S_{t-1}),
+\]
+其中 $q$ 表示相关性代理，$\rho$ 表示冗余代理，实验中固定 $\lambda = 1$。第一步没有冗余项，因此
+\[
+m_1 = \arg\max_{m \in \mathcal M} \bar R_q(m),
+\]
+后续各步选择
+\[
+m_t = \arg\max_{m \in U_{t-1}} \mathrm{Score}_{q,\rho}(m \mid S_{t-1}).
+\]
+
+\paragraph{相关性代理的数学定义}
+当前实验实际用到三种相关性代理。
+
+\textbf{1. LogME.}
+对每个模型 $m$，令 $F_m = U \Sigma V^\top$ 为其特征矩阵的奇异值分解，并把多分类问题拆成 one-vs-rest 回归目标 $y^{(c)} \in \{0,1\}^n$。LogME 取每个类别的 Bayesian linear evidence 的平均：
+\[
+R_{\mathrm{LogME}}(m)
+= \frac{1}{C}\sum_{c=1}^C \mathcal E(F_m, y^{(c)}),
+\]
+其中
+\[
+\mathcal E(F, y)
+= \frac{1}{2}\Bigl(
+d \log \alpha + n \log \beta
+- \beta \|y - Fw\|_2^2
+- \alpha \|w\|_2^2
+- \log\det(\alpha I + \beta F^\top F)
+- n\log(2\pi)
+\Bigr),
+\]
+参数 $\alpha,\beta$ 由 evidence maximization 的固定点迭代求得。直观上，$R_{\mathrm{LogME}}(m)$ 越大，表示该冻结表示越容易被一个轻量线性头解释当前标签。
+
+\textbf{2. GBC.}
+对每个类别 $c$，在表示空间中拟合高斯分布
+\[
+F_m \mid Y=c \sim \mathcal N(\mu_c, \Sigma_c).
+\]
+对任意类别对 $(c,c')$，Bhattacharyya 距离定义为
+\[
+D_B(c,c')
+= \frac{1}{8}(\mu_c-\mu_{c'})^\top \Sigma^{-1}(\mu_c-\mu_{c'})
++ \frac{1}{2}\log
+\frac{\det \Sigma}{\sqrt{\det \Sigma_c \det \Sigma_{c'}}},
+\qquad
+\Sigma = \frac{\Sigma_c + \Sigma_{c'}}{2}.
+\]
+GBC 相关性分数是所有类别对距离的平均：
+\[
+R_{\mathrm{GBC}}(m)
+= \frac{1}{|\{(c,c') : c<c'\}|}
+\sum_{c<c'} D_B(c,c').
+\]
+该分数越大，表示不同类别在当前表示空间中的类间可分性越强。
+
+\textbf{3. H-Score.}
+记总体协方差为 $\mathrm{Cov}(F_m)$，类条件均值的协方差为
+\[
+\mathrm{Cov}\bigl(\mathbb E[F_m \mid Y]\bigr).
+\]
+H-Score 定义为
+\[
+R_{\mathrm{HScore}}(m)
+= \mathrm{tr}\!\Bigl(
+\mathrm{Cov}(F_m)^{-1}
+\mathrm{Cov}\bigl(\mathbb E[F_m \mid Y]\bigr)
+\Bigr).
+\]
+它衡量的是“类间结构”相对于“总体变化”的强度，数值越大通常表示该表示对下游分类越友好。
+
+\paragraph{冗余代理的数学定义}
+当前实验实际用到两种冗余统计量。
+
+\textbf{1. CKA.}
+对两个模型表示 $F_i,F_j$，线性 CKA 写为
+\[
+\rho_{\mathrm{CKA}}(F_i,F_j)
+= \mathrm{CKA}(F_i,F_j)
+= \frac{\|F_j^\top F_i\|_F^2}
+{\sqrt{\|F_i^\top F_i\|_F^2 \cdot \|F_j^\top F_j\|_F^2}},
+\]
+在高维大样本不平衡时，代码也允许切换到等价的 kernel-space 形式。$\mathrm{CKA}$ 越大，表示两组特征越相似、冗余越强。
+
+\textbf{2. SVCCA.}
+对每个模型表示先做 PCA，保留累计解释方差达到阈值 $\tau=0.99$ 的主成分，且最多保留 $128$ 维，得到降维表示 $\widetilde F_i,\widetilde F_j$。然后计算 canonical correlations
+\[
+\sigma_1,\dots,\sigma_K,
+\qquad
+K = \min\{\dim(\widetilde F_i), \dim(\widetilde F_j), n\}.
+\]
+SVCCA 相似度定义为这些 canonical correlations 的平均：
+\[
+\rho_{\mathrm{SVCCA}}(F_i,F_j)
+= \frac{1}{K}\sum_{\ell=1}^K \sigma_\ell.
+\]
+与 CKA 一样，数值越大表示两种表示越接近。
+
+\paragraph{九种选择方法逐一写开}
+\textbf{1. Ours (LogME+CKA).}
+这是本文主方法，取
+\[
+q = \mathrm{LogME}, \qquad \rho = \mathrm{CKA},
+\]
+因此每一步选择
+\[
+m_t^{\mathrm{ours}}
+= \arg\max_{m \in U_{t-1}}
+\Bigl[
+\bar R_{\mathrm{LogME}}(m)
+- \bar D_{\mathrm{CKA}}(m, S_{t-1})
+\Bigr].
+\]
+
+\textbf{2. GBC+CKA.}
+与主方法完全共用同一贪心框架，只把相关性代理替换为 GBC：
+\[
+m_t^{\mathrm{GBC+CKA}}
+= \arg\max_{m \in U_{t-1}}
+\Bigl[
+\bar R_{\mathrm{GBC}}(m)
+- \bar D_{\mathrm{CKA}}(m, S_{t-1})
+\Bigr].
+\]
+
+\textbf{3. H-Score+CKA.}
+同理，把相关性代理替换为 H-Score：
+\[
+m_t^{\mathrm{HScore+CKA}}
+= \arg\max_{m \in U_{t-1}}
+\Bigl[
+\bar R_{\mathrm{HScore}}(m)
+- \bar D_{\mathrm{CKA}}(m, S_{t-1})
+\Bigr].
+\]
+
+\textbf{4. LogME+SVCCA.}
+保留 LogME 相关性，但把冗余统计量从 CKA 替换为 SVCCA：
+\[
+m_t^{\mathrm{LogME+SVCCA}}
+= \arg\max_{m \in U_{t-1}}
+\Bigl[
+\bar R_{\mathrm{LogME}}(m)
+- \bar D_{\mathrm{SVCCA}}(m, S_{t-1})
+\Bigr].
+\]
+这个方法用于检验“冗余代理的具体选择”是否会改变排序质量。
+
+\textbf{5. mRMR.}
+这一路径不走上面的统一贪心打分，而是调用经典 mRMR 准则。代码先把每个模型特征经 PCA 压到最多 $64$ 维，再用高斯近似估计互信息。其目标是
+\[
+J_{\mathrm{mRMR}}(m \mid S_{t-1})
+= I(F_m;Y)
+- \frac{1}{|S_{t-1}|}\sum_{j \in S_{t-1}} I(F_m;F_j).
+\]
+第一步选
+\[
+m_1^{\mathrm{mRMR}} = \arg\max_{m \in \mathcal M} I(F_m;Y),
+\]
+之后选
+\[
+m_t^{\mathrm{mRMR}}
+= \arg\max_{m \in U_{t-1}}
+J_{\mathrm{mRMR}}(m \mid S_{t-1}).
+\]
+其中 $I(F_m;Y)$ 和 $I(F_m;F_j)$ 都是用高斯协方差与对数行列式构造的可计算估计量。
+
+\textbf{6. JMI.}
+JMI 同样先做 PCA 降维，再使用高斯近似。第一步仍按
+\[
+m_1^{\mathrm{JMI}} = \arg\max_{m \in \mathcal M} I(F_m;Y)
+\]
+选择，后续各步最大化
+\[
+J_{\mathrm{JMI}}(m \mid S_{t-1})
+= \sum_{j \in S_{t-1}} I(F_m, F_j; Y).
+\]
+因此
+\[
+m_t^{\mathrm{JMI}}
+= \arg\max_{m \in U_{t-1}}
+\sum_{j \in S_{t-1}} I(F_m, F_j; Y).
+\]
+直观上，JMI 鼓励新模型与已选模型一起对标签提供大的联合信息。
+
+\textbf{7. Relevance Only.}
+这是只看单模型相关性的弱化版本，不显式惩罚冗余：
+\[
+m_t^{\mathrm{RelOnly}}
+= \arg\max_{m \in U_{t-1}} R_{\mathrm{LogME}}(m).
+\]
+等价地，它只是把所有模型按 LogME 从高到低排序。
+
+\textbf{8. Random.}
+随机基线不使用任何统计量。给定随机种子后，对候选模型集合做一次随机置换
+\[
+\pi : \mathcal M \to \mathcal M,
+\]
+然后取前 $K$ 个模型：
+\[
+(m_1^{\mathrm{rand}},\dots,m_K^{\mathrm{rand}})
+= (\pi(1),\dots,\pi(K)).
+\]
+因此它只回答“一个无信息顺序能做到什么程度”。
+
+\textbf{9. All Models.}
+这个对照组也不计算任何分数，而是把候选池中全部模型按照固定的确定性枚举顺序直接纳入。若记这个固定顺序为
+\[
+(a_1,\dots,a_{|\mathcal M|}),
+\]
+则第 $k$ 步对应的模型子集就是
+\[
+S_k^{\mathrm{all}} = \{a_1,\dots,a_k\}.
+\]
+它的意义不是提供一个“聪明排序”，而是回答：如果完全不做选择、只是不断往里加模型，性能会怎样变化。
+
+\section{多数据集经验结果汇总}
+
+只报告单个数据集（例如仅报告 DTD）不足以支撑选择方法层面的总体结论。按照当前代码与实验脚本的协议，更合适的主实验应至少覆盖 STL10、Pets、EuroSAT、DTD、GTSRB 与 SVHN 六个数据集，并在固定融合器下比较不同选择方法得到的最优结果。
+
+主实验流水线严格分为三个阶段：第一阶段对每个数据集、每个候选预训练模型提取冻结特征；第二阶段仅在训练集特征上运行上述九种选择策略并得到排序；第三阶段固定使用同一融合训练协议，对每种排序从小到大搜索模型数 $k$，在验证集上选择最优 $k$，最后只在测试集上做一次最终报告。当前脚本的默认设置是在 $14$ 个候选模型中取前 $k \le 10$ 个进入融合训练，因此结果表反映的是“固定候选池、固定融合器、比较不同选择方法”的主实验，而不是单一数据集上的局部缩放示例。
+
+本节只保留当前已经完成的结果展示。\input{generated/current_selection_progress_note.tex}
+
+\subsection{当前完整快照}
+
+表~\ref{tab:current-selection-snapshot} 给出了截至 2026 年 3 月 23 日当前已完成数据集上的完整结果快照。为了保证比较公平，表中只保留了九种方法都已经完成的四个数据集：STL10、Pets、EuroSAT 和 DTD。每个单元格都报告该方法在对应数据集上、当前已完成的 $k=2,\dots,10$ 搜索范围内所达到的最佳测试准确率。
+
+\input{generated/current_selection_snapshot_table.tex}
+
+图~\ref{fig:current-selection-bar} 用更直接的柱状图汇总四个已完成数据集上的三类结果：当前两项方法、该数据集上当前最强的 baseline，以及完全不做选择的 All Models。对于当前这版阶段性分析，柱状图比折线图更合适，因为我们这里要强调的是“横向方法比较”，而不是完整的 scaling trajectory。
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\textwidth]{generated/current_selection_bar_chart.pdf}
+\caption{Current snapshot on the completed datasets. For each dataset, we compare the current two-term method, the strongest finished baseline, and the no-selection All Models result using their best finished test accuracy.}
+\label{fig:current-selection-bar}
+\end{figure}
+
 \section{哪些地方是严格证明，哪些地方只是带条件或近似}
 
 \paragraph{严格可证的部分}
@@ -422,32 +725,15 @@ s(X, Z) = s(Y, Z).
     \item “存在最优模型数”不是无条件普适定理，而是针对 few-shot 融合的合理结构假设下成立。
 \end{itemize}
 
-\paragraph{工程近似的部分}
+\paragraph{工程近似与实验协议的部分}
 \begin{itemize}
     \item $\widehat R$ 不是互信息本身，只是相关性的代理；
     \item CKA 不是 $I(F_m; F_S)$ 的无偏估计，只是冗余代理；
     \item 第三项采用 pairwise low-order approximation，而不是 set-level 条件互信息的直接估计；
     \item PCA + 类条件高斯估计器是可计算近似，不是严格一致估计；
     \item class-conditional CKA 只是探索性诊断，不能替代第三项。
+    \item 经验评估采用 train/val/test 协议，其中 test 只用于最终一次报告。
 \end{itemize}
-
-\section{与相关文献的关系}
-
-\begin{itemize}
-    \item Hughes (1968) \cite{hughes1968mean} 首先在统计模式识别中发现了 ``peaking phenomenon''：当特征数超过训练样本数的某个阈值后，分类准确率不升反降。本文的核心结论——存在最优模型数 $K^\star$，使得超过此数后准确率下降——与 Hughes 现象在本质上一致。区别在于 Hughes 原始设定是对单一特征空间增加维度，而本文是对多个异构预训练模型的拼接特征。我们的理论分析（命题~\ref{prop:rademacher}）通过 Rademacher 复杂度给出了 Hughes 现象在多模型融合场景下的现代形式化。
-    \item Tishby 的 Information Bottleneck 提供了“保留任务相关信息、压缩无关输入信息”的概念框架，但不宜单独作为本文“先升后降”的唯一证明主线。
-    \item Kawaguchi 等人在 ICML 2023 指出，在固定表示场景下，泛化差与 $I(X; Z \mid Y)$ 有关；这更适合作为解释为什么新增代价会变大的机制，而不是替代本文的风险分解证明。
-    \item Brown 等人在 JMLR 2012 给出了信息论特征选择的低阶近似框架，为本文把第三项改写为 pairwise conditional term 提供了直接依据。
-    \item Kornblith 等人在 ICML 2019 说明了为什么高维表示比较中需要谨慎选择相似度统计量，这为本文使用 CKA 作为冗余代理提供了方法论支撑。
-\end{itemize}
-
-\section{结论性表述}
-
-基于上述分析，本文最稳妥的理论表述可以写成：
-
-\begin{quote}
-对于冻结预训练编码器的多模型特征融合，增加模型在总体层面不会降低 Bayes 可达性能；然而在有限样本下，新增模型带来的统计估计代价与优化代价可能增长得快于其 Bayes 收益，从而导致测试准确率先上升后下降。对任一候选模型，其边际标签信息可被精确分解为任务相关性、与已选模型的冗余以及类条件修正三项。由于高维 set-level 条件互信息难以直接估计，本文将实现分成两层：原始两项排序负责建模“相关性 + 冗余”的主导部分，三项扩展分支则通过 Brown 风格的 pairwise low-order approximation 处理第三项。该理论既解释了“更多模型不一定更好”，也解释了为什么纯多样性排序会失败。
-\end{quote}
 
 \begin{thebibliography}{20}
 

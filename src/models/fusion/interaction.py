@@ -86,7 +86,7 @@ class MultiModelDifferenceAwareExtractor(nn.Module):
         # Get projected features
         projected_features = []
         for name in self.model_types:
-            feat = cached_inputs[f"feat_{name}"]
+            feat = FeatureExtractor._ensure_matrix(cached_inputs[f"feat_{name}"])
             projected_feat = self.projections[name](feat)
             projected_features.append(projected_feat)
 
@@ -179,7 +179,7 @@ class MultiModelHadamardExtractor(nn.Module):
         # Get projected features
         projected_features = []
         for name in self.model_types:
-            feat = cached_inputs[f"feat_{name}"]
+            feat = FeatureExtractor._ensure_matrix(cached_inputs[f"feat_{name}"])
             projected_feat = self.projections[name](feat)
             projected_features.append(projected_feat)
 
@@ -269,7 +269,7 @@ class MultiModelBilinearExtractor(nn.Module):
     def forward_from_cache(self, cached_inputs: Dict[str, torch.Tensor]) -> torch.Tensor:
         projected_features = []
         for name in self.model_types:
-            feat = cached_inputs[f"feat_{name}"]
+            feat = FeatureExtractor._ensure_matrix(cached_inputs[f"feat_{name}"])
             projected_features.append(self.projections[name](feat))
         bilinear_pairs = self._compute_bilinear_pairs(projected_features)
         return torch.cat(projected_features + bilinear_pairs, dim=-1)

@@ -335,13 +335,22 @@ class FeatureExtractor(nn.Module):
         x = self._maybe_normalize(pixel_values)
         return self.model(pixel_values=x, output_hidden_states=output_hidden_states)
 
+    @staticmethod
+    def _ensure_matrix(features: torch.Tensor) -> torch.Tensor:
+        """Flatten backbone outputs to [B, D] for downstream fusion/classification."""
+        if features.ndim <= 2:
+            return features
+        if all(dim == 1 for dim in features.shape[2:]):
+            return features.flatten(1)
+        return features.reshape(features.size(0), -1)
+
     @torch.no_grad()
     def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
         """Extract a single global feature vector."""
         outputs = self._run_model(pixel_values, output_hidden_states=False)
         if hasattr(outputs, "pooler_output") and outputs.pooler_output is not None:
-            return outputs.pooler_output
-        return outputs.last_hidden_state[:, 0]
+            return self._ensure_matrix(outputs.pooler_output)
+        return self._ensure_matrix(outputs.last_hidden_state[:, 0])
 
     @torch.no_grad()
     def extract_cache_batch(self, pixel_values: torch.Tensor) -> Dict[str, torch.Tensor]:

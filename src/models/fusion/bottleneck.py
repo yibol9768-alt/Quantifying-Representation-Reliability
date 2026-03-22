@@ -64,7 +64,7 @@ class _ConcatBase(nn.Module):
     ) -> torch.Tensor:
         features = []
         for name in self.model_types:
-            feat = cached_inputs[f"feat_{name}"]
+            feat = FeatureExtractor._ensure_matrix(cached_inputs[f"feat_{name}"])
             if normalize:
                 feat = feat / (feat.norm(dim=-1, keepdim=True) + 1e-8)
             features.append(feat)

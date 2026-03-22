@@ -12,6 +12,9 @@ covariance of class-conditional means.
 """
 
 import numpy as np
+import torch
+
+from ._torch_backend import run_with_fallback
 
 
 def hscore(
@@ -29,37 +32,39 @@ def hscore(
     Returns:
         H-Score (higher = better transferability).
     """
-    features = features.astype(np.float64)
-    N, d = features.shape
-    classes = np.unique(labels)
-    C = len(classes)
+    def _impl(device: torch.device, dtype: torch.dtype) -> float:
+        feats = torch.as_tensor(features, dtype=dtype, device=device)
+        labels_t = torch.as_tensor(labels, device=device)
+        N, d = feats.shape
+        classes = torch.unique(labels_t)
+        C = int(classes.numel())
 
-    if C < 2:
-        return 0.0
+        if C < 2:
+            return 0.0
 
-    # Overall feature covariance
-    f_centered = features - features.mean(axis=0, keepdims=True)
-    cov_f = (f_centered.T @ f_centered) / max(N - 1, 1)
-    cov_f += reg * np.eye(d)
+        f_centered = feats - feats.mean(dim=0, keepdim=True)
+        cov_f = (f_centered.transpose(0, 1) @ f_centered) / max(N - 1, 1)
+        cov_f = cov_f + reg * torch.eye(d, dtype=dtype, device=device)
 
-    # Class-conditional means
-    class_means = np.zeros((C, d), dtype=np.float64)
-    class_weights = np.zeros(C, dtype=np.float64)
-    for i, c in enumerate(classes):
-        mask = labels == c
-        class_means[i] = features[mask].mean(axis=0)
-        class_weights[i] = mask.sum() / N
+        class_means = []
+        class_weights = []
+        for c in classes:
+            mask = labels_t == c
+            class_means.append(feats[mask].mean(dim=0))
+            class_weights.append(mask.sum().to(dtype) / N)
 
-    # Covariance of class-conditional means (between-class covariance)
-    weighted_mean = (class_weights[:, None] * class_means).sum(axis=0)
-    diff = class_means - weighted_mean
-    cov_between = (class_weights[:, None] * diff).T @ diff
+        class_means_t = torch.stack(class_means, dim=0)
+        class_weights_t = torch.stack(class_weights, dim=0)
+        weighted_mean = (class_weights_t[:, None] * class_means_t).sum(dim=0)
+        diff = class_means_t - weighted_mean
+        cov_between = (class_weights_t[:, None] * diff).transpose(0, 1) @ diff
 
-    # H-Score = tr(cov_f^{-1} @ cov_between)
-    try:
-        cov_f_inv = np.linalg.inv(cov_f)
-    except np.linalg.LinAlgError:
-        cov_f_inv = np.linalg.pinv(cov_f)
+        try:
+            solved = torch.linalg.solve(cov_f, cov_between)
+        except RuntimeError:
+            solved = torch.linalg.pinv(cov_f) @ cov_between
 
-    score = float(np.trace(cov_f_inv @ cov_between))
-    return max(score, 0.0)
+        score = torch.trace(solved)
+        return float(torch.clamp(score, min=0.0).item())
+
+    return run_with_fallback(_impl)

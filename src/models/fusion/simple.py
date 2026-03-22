@@ -62,7 +62,7 @@ class MultiModelConcatExtractor(nn.Module):
         """Fuse cached branch features without touching backbones."""
         features = []
         for name in self.model_types:
-            feat = cached_inputs[f"feat_{name}"]
+            feat = FeatureExtractor._ensure_matrix(cached_inputs[f"feat_{name}"])
             if normalize:
                 feat = feat / (feat.norm(dim=-1, keepdim=True) + 1e-8)
             features.append(feat)
@@ -135,7 +135,7 @@ class MultiModelProjectedConcatExtractor(nn.Module):
         """Fuse cached features with projection."""
         projected_features = []
         for name in self.model_types:
-            feat = cached_inputs[f"feat_{name}"]
+            feat = FeatureExtractor._ensure_matrix(cached_inputs[f"feat_{name}"])
             projected_feat = self.projections[name](feat)
             projected_features.append(projected_feat)
         return torch.cat(projected_features, dim=-1)
@@ -217,7 +217,7 @@ class MultiModelWeightedSumExtractor(nn.Module):
                            self.proj_dim, device=device)
 
         for i, name in enumerate(self.model_types):
-            feat = cached_inputs[f"feat_{name}"]
+            feat = FeatureExtractor._ensure_matrix(cached_inputs[f"feat_{name}"])
             projected_feat = self.projections[name](feat)
             fused = fused + weights[i] * projected_feat
 
@@ -310,7 +310,7 @@ class MultiModelGatedFusionExtractor(nn.Module):
         # Get all projected features
         projected_features = []
         for name in self.model_types:
-            feat = cached_inputs[f"feat_{name}"]
+            feat = FeatureExtractor._ensure_matrix(cached_inputs[f"feat_{name}"])
             projected_feat = self.projections[name](feat)
             projected_features.append(projected_feat)
 

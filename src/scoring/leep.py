@@ -11,6 +11,9 @@ predictions z and target labels y.
 """
 
 import numpy as np
+import torch
+
+from ._torch_backend import run_with_fallback
 
 
 def leep_score(
@@ -27,41 +30,30 @@ def leep_score(
     Returns:
         LEEP score (higher = better transferability). Typically negative.
     """
-    N, C_source = source_probs.shape
-    target_classes = np.unique(target_labels)
-    C_target = len(target_classes)
+    def _impl(device: torch.device, dtype: torch.dtype) -> float:
+        probs = torch.as_tensor(source_probs, dtype=dtype, device=device)
+        labels_t = torch.as_tensor(target_labels, device=device)
+        N, C_source = probs.shape
+        target_classes = torch.unique(labels_t)
+        C_target = int(target_classes.numel())
 
-    # Build label map to contiguous indices
-    label_map = {int(c): i for i, c in enumerate(target_classes)}
-    y_idx = np.array([label_map[int(l)] for l in target_labels])
+        y_idx = torch.empty_like(labels_t, dtype=torch.long)
+        for i, c in enumerate(target_classes):
+            y_idx[labels_t == c] = i
 
-    # Empirical joint P(y, z) = (1/N) sum_i 1[y_i = y] * theta_i(z)
-    # P(z) = (1/N) sum_i theta_i(z)  [marginal over source classes]
-    # P(y | z) = P(y, z) / P(z)
+        p_z = probs.mean(dim=0)
+        p_yz = torch.zeros((C_target, C_source), dtype=dtype, device=device)
+        for c_idx in range(C_target):
+            mask = y_idx == c_idx
+            if torch.any(mask):
+                p_yz[c_idx] = probs[mask].mean(dim=0) * mask.to(dtype).mean()
 
-    # Compute empirical marginal P(z): [C_source]
-    p_z = source_probs.mean(axis=0)  # [C_source]
+        p_y_given_z = torch.zeros_like(p_yz)
+        nonzero = p_z > 1e-12
+        p_y_given_z[:, nonzero] = p_yz[:, nonzero] / p_z[nonzero]
 
-    # Compute P(y, z): [C_target, C_source]
-    p_yz = np.zeros((C_target, C_source), dtype=np.float64)
-    for c_idx in range(C_target):
-        mask = y_idx == c_idx
-        if mask.any():
-            p_yz[c_idx] = source_probs[mask].mean(axis=0) * mask.mean()
+        probs_y = p_y_given_z[y_idx]
+        sample_probs = torch.sum(probs * probs_y, dim=1).clamp_min(1e-30)
+        return float(torch.log(sample_probs).mean().item())
 
-    # P(y | z) = P(y, z) / P(z), with safe division
-    p_y_given_z = np.zeros_like(p_yz)
-    nonzero = p_z > 1e-12
-    p_y_given_z[:, nonzero] = p_yz[:, nonzero] / p_z[nonzero]
-
-    # LEEP = (1/N) sum_i log( sum_z theta_i(z) * P(y_i | z) )
-    # For each sample i, compute sum_z theta_i(z) * P(y_i | z)
-    leep = 0.0
-    for i in range(N):
-        yi = y_idx[i]
-        # sum over source classes z: theta_i(z) * P(y_i | z)
-        prob = float(source_probs[i] @ p_y_given_z[yi])
-        prob = max(prob, 1e-30)
-        leep += np.log(prob)
-
-    return float(leep / N)
+    return run_with_fallback(_impl)

@@ -111,7 +111,7 @@ class MultiModelTopKRouterExtractor(nn.Module):
 
     def forward_from_cache(self, cached_inputs: Dict[str, torch.Tensor]) -> torch.Tensor:
         projected_features = [
-            self.projections[name](cached_inputs[f"feat_{name}"])
+            self.projections[name](FeatureExtractor._ensure_matrix(cached_inputs[f"feat_{name}"]))
             for name in self.model_types
         ]
         return self._route(projected_features)
@@ -217,7 +217,7 @@ class MultiModelMoERouterExtractor(nn.Module):
 
     def forward_from_cache(self, cached_inputs: Dict[str, torch.Tensor]) -> torch.Tensor:
         projected_features = [
-            self.projections[name](cached_inputs[f"feat_{name}"])
+            self.projections[name](FeatureExtractor._ensure_matrix(cached_inputs[f"feat_{name}"]))
             for name in self.model_types
         ]
         return self._route(projected_features)
@@ -317,7 +317,7 @@ class MultiModelAttentionRouterExtractor(nn.Module):
 
     def forward_from_cache(self, cached_inputs: Dict[str, torch.Tensor]) -> torch.Tensor:
         projected_features = [
-            self.projections[name](cached_inputs[f"feat_{name}"])
+            self.projections[name](FeatureExtractor._ensure_matrix(cached_inputs[f"feat_{name}"]))
             for name in self.model_types
         ]
         return self._route(projected_features)

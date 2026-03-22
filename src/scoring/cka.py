@@ -9,7 +9,10 @@ Reference:
 """
 
 import numpy as np
+import torch
 from typing import Dict, List, Tuple
+
+from ._torch_backend import run_with_fallback
 
 
 def linear_cka(X: np.ndarray, Y: np.ndarray) -> float:
@@ -25,34 +28,36 @@ def linear_cka(X: np.ndarray, Y: np.ndarray) -> float:
     Returns:
         CKA similarity in [0, 1].
     """
-    assert X.shape[0] == Y.shape[0], "X and Y must have same number of samples"
-    n = X.shape[0]
+    def _impl(device: torch.device, dtype: torch.dtype) -> float:
+        Xt = torch.as_tensor(X, dtype=dtype, device=device)
+        Yt = torch.as_tensor(Y, dtype=dtype, device=device)
+        assert Xt.shape[0] == Yt.shape[0], "X and Y must have same number of samples"
+        n = int(Xt.shape[0])
 
-    X = X - X.mean(axis=0, keepdims=True)
-    Y = Y - Y.mean(axis=0, keepdims=True)
+        Xt = Xt - Xt.mean(dim=0, keepdim=True)
+        Yt = Yt - Yt.mean(dim=0, keepdim=True)
 
-    d_max = max(X.shape[1], Y.shape[1])
-    if d_max <= n:
-        # Feature-space
-        YtX = Y.T @ X
-        XtX = X.T @ X
-        YtY = Y.T @ Y
-        numerator = (YtX * YtX).sum()
-        denominator = np.sqrt((XtX * XtX).sum() * (YtY * YtY).sum())
-    else:
-        # Kernel-space
-        K = X @ X.T
-        L = Y @ Y.T
-        H = np.eye(n) - 1.0 / n
-        K = H @ K @ H
-        L = H @ L @ H
-        numerator = (K * L).sum()
-        denominator = np.sqrt((K * K).sum() * (L * L).sum())
+        d_max = max(int(Xt.shape[1]), int(Yt.shape[1]))
+        if d_max <= n:
+            yt_x = Yt.transpose(0, 1) @ Xt
+            xt_x = Xt.transpose(0, 1) @ Xt
+            yt_y = Yt.transpose(0, 1) @ Yt
+            numerator = yt_x.square().sum()
+            denominator = torch.sqrt(xt_x.square().sum() * yt_y.square().sum())
+        else:
+            K = Xt @ Xt.transpose(0, 1)
+            L = Yt @ Yt.transpose(0, 1)
+            H = torch.eye(n, dtype=dtype, device=device) - (1.0 / n)
+            K = H @ K @ H
+            L = H @ L @ H
+            numerator = (K * L).sum()
+            denominator = torch.sqrt((K * K).sum() * (L * L).sum())
 
-    if denominator < 1e-10:
-        return 0.0
+        if denominator.item() < 1e-10:
+            return 0.0
+        return float(torch.clamp(numerator / denominator, min=0.0, max=1.0).item())
 
-    return float(np.clip(numerator / denominator, 0.0, 1.0))
+    return run_with_fallback(_impl)
 
 
 def cka_pairwise_matrix(
@@ -66,15 +71,55 @@ def cka_pairwise_matrix(
     Returns:
         (model_names, cka_matrix) where cka_matrix is [M, M].
     """
-    names = list(features.keys())
-    M = len(names)
-    matrix = np.zeros((M, M))
+    def _impl(device: torch.device, dtype: torch.dtype) -> Tuple[List[str], np.ndarray]:
+        names = list(features.keys())
+        tensors = {
+            name: torch.as_tensor(feat, dtype=dtype, device=device)
+            for name, feat in features.items()
+        }
+        M = len(names)
+        matrix = np.zeros((M, M), dtype=np.float64)
 
-    for i in range(M):
-        matrix[i, i] = 1.0
-        for j in range(i + 1, M):
-            val = linear_cka(features[names[i]], features[names[j]])
-            matrix[i, j] = val
-            matrix[j, i] = val
+        centered = {
+            name: tensor - tensor.mean(dim=0, keepdim=True)
+            for name, tensor in tensors.items()
+        }
 
-    return names, matrix
+        stats = {}
+        for name, tensor in centered.items():
+            n = int(tensor.shape[0])
+            d = int(tensor.shape[1])
+            if max(d, d) <= n:
+                gram = tensor.transpose(0, 1) @ tensor
+                denom_sq = gram.square().sum()
+                stats[name] = ("feature", tensor, denom_sq)
+            else:
+                gram = tensor @ tensor.transpose(0, 1)
+                H = torch.eye(n, dtype=dtype, device=device) - (1.0 / n)
+                gram = H @ gram @ H
+                denom_sq = (gram * gram).sum()
+                stats[name] = ("kernel", gram, denom_sq)
+
+        for i in range(M):
+            matrix[i, i] = 1.0
+            for j in range(i + 1, M):
+                kind_i, data_i, denom_i = stats[names[i]]
+                kind_j, data_j, denom_j = stats[names[j]]
+
+                if kind_i == "feature" and kind_j == "feature":
+                    numerator = (data_j.transpose(0, 1) @ data_i).square().sum()
+                else:
+                    gram_i = data_i if kind_i == "kernel" else (centered[names[i]] @ centered[names[i]].transpose(0, 1))
+                    gram_j = data_j if kind_j == "kernel" else (centered[names[j]] @ centered[names[j]].transpose(0, 1))
+                    numerator = (gram_i * gram_j).sum()
+
+                denominator = torch.sqrt(denom_i * denom_j)
+                val = 0.0 if denominator.item() < 1e-10 else float(
+                    torch.clamp(numerator / denominator, min=0.0, max=1.0).item()
+                )
+                matrix[i, j] = val
+                matrix[j, i] = val
+
+        return names, matrix
+
+    return run_with_fallback(_impl)

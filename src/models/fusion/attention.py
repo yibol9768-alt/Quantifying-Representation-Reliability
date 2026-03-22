@@ -74,7 +74,10 @@ class MultiModelFiLMExtractor(nn.Module):
         return {f"feat_{n}": self.extractors[n](pixel_values) for n in self.model_types}
 
     def forward_from_cache(self, cached_inputs: Dict[str, torch.Tensor]) -> torch.Tensor:
-        projected = {n: self.projections[n](cached_inputs[f"feat_{n}"]) for n in self.model_types}
+        projected = {
+            n: self.projections[n](FeatureExtractor._ensure_matrix(cached_inputs[f"feat_{n}"]))
+            for n in self.model_types
+        }
         return self._fuse(projected)
 
     def release_backbones(self):
@@ -134,7 +137,10 @@ class MultiModelContextGatingExtractor(nn.Module):
         return {f"feat_{n}": self.extractors[n](pixel_values) for n in self.model_types}
 
     def forward_from_cache(self, cached_inputs: Dict[str, torch.Tensor]) -> torch.Tensor:
-        feats = [self.projections[n](cached_inputs[f"feat_{n}"]) for n in self.model_types]
+        feats = [
+            self.projections[n](FeatureExtractor._ensure_matrix(cached_inputs[f"feat_{n}"]))
+            for n in self.model_types
+        ]
         return self._fuse(feats)
 
     def release_backbones(self):
@@ -209,7 +215,10 @@ class MultiModelLMFExtractor(nn.Module):
         return {f"feat_{n}": self.extractors[n](pixel_values) for n in self.model_types}
 
     def forward_from_cache(self, cached_inputs: Dict[str, torch.Tensor]) -> torch.Tensor:
-        projected = {n: self.projections[n](cached_inputs[f"feat_{n}"]) for n in self.model_types}
+        projected = {
+            n: self.projections[n](FeatureExtractor._ensure_matrix(cached_inputs[f"feat_{n}"]))
+            for n in self.model_types
+        }
         return self._fuse(projected)
 
     def release_backbones(self):
@@ -283,7 +292,10 @@ class MultiModelSEFusionExtractor(nn.Module):
         return {f"feat_{n}": self.extractors[n](pixel_values) for n in self.model_types}
 
     def forward_from_cache(self, cached_inputs: Dict[str, torch.Tensor]) -> torch.Tensor:
-        feats = [self.projections[n](cached_inputs[f"feat_{n}"]) for n in self.model_types]
+        feats = [
+            self.projections[n](FeatureExtractor._ensure_matrix(cached_inputs[f"feat_{n}"]))
+            for n in self.model_types
+        ]
         return self._fuse(feats)
 
     def release_backbones(self):
@@ -353,7 +365,7 @@ class MultiModelLateFusionExtractor(nn.Module):
     def forward_from_cache(self, cached_inputs: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         """Return cached features as dict for late fusion."""
         return {
-            name: cached_inputs[f"feat_{name}"]
+            name: FeatureExtractor._ensure_matrix(cached_inputs[f"feat_{name}"])
             for name in self.model_types
         }
 

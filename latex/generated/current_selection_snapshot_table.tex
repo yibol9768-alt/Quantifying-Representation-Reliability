@@ -1,0 +1,21 @@
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lrrrrr}
+\hline
+Method & STL10 & Pets & EuroSAT & DTD & Avg. \\
+\hline
+Ours (LogME+CKA) & 99.28 & 96.40 & 98.02 & 82.02 & 93.93 \\
+GBC+CKA & \textbf{99.31} & 96.43 & 98.09 & 81.65 & 93.87 \\
+H-Score+CKA & 99.28 & 96.38 & 98.09 & 82.23 & 93.99 \\
+LogME+SVCCA & 99.28 & \textbf{96.59} & 98.15 & 81.97 & 94.00 \\
+mRMR & 99.21 & 96.27 & 98.13 & 81.65 & 93.81 \\
+JMI & 99.28 & 96.54 & \textbf{98.17} & 82.13 & 94.03 \\
+Relevance Only & 99.28 & \textbf{96.59} & 98.06 & \textbf{82.29} & 94.05 \\
+Random & 99.26 & 96.29 & 98.00 & 81.86 & 93.85 \\
+All Models & \textbf{99.31} & 96.27 & 97.81 & 81.97 & 93.84 \\
+\hline
+\end{tabular}
+\caption{Current complete-dataset snapshot of selection methods as of March 23, 2026. Only datasets with all nine methods finished are shown. Each cell reports the best test accuracy (\%) over the completed range $k=2,\dots,10$.}
+\label{tab:current-selection-snapshot}
+\end{table}
