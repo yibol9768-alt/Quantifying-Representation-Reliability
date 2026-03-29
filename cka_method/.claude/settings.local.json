@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir -p src/models src/datasets src/selection src/fusion src/training src/utils)",
+      "Bash(touch src/__init__.py src/models/__init__.py src/datasets/__init__.py src/selection/__init__.py src/fusion/__init__.py src/training/__init__.py src/utils/__init__.py)"
+    ]
+  }
+}

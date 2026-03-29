@@ -1,0 +1,40 @@
+{
+  "dataset": "gtsrb",
+  "models": [
+    "resnet50",
+    "clip_vit_base",
+    "convnext_tiny",
+    "deit_small",
+    "dinov2_base",
+    "vit_base",
+    "vit_mae_base",
+    "siglip",
+    "convnext_base",
+    "dinov2_small"
+  ],
+  "n_way": 5,
+  "k_values": [
+    1,
+    5,
+    10,
+    16
+  ],
+  "results": {
+    "1-shot": {
+      "mean": 0.9281112551689148,
+      "ci_95": 0.005706536743681355
+    },
+    "5-shot": {
+      "mean": 0.9609110355377197,
+      "ci_95": 0.003566604989388363
+    },
+    "10-shot": {
+      "mean": 0.9683111310005188,
+      "ci_95": 0.0028098594011299323
+    },
+    "16-shot": {
+      "mean": 0.9768000245094299,
+      "ci_95": 0.0022471774817060483
+    }
+  }
+}

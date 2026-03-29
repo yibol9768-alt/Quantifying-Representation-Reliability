@@ -1,0 +1,7 @@
+2026-03-29 21:20:46  INFO      __main__  ============================================================
+2026-03-29 21:20:46  INFO      __main__  数据集      : gtsrb
+2026-03-29 21:20:46  INFO      __main__  候选模型    : ['deit_small', 'dinov2_small', 'convnext_tiny', 'vit_base', 'convnext_base', 'vit_mae_base', 'dinov2_base', 'clip_vit_base', 'resnet50', 'siglip']
+2026-03-29 21:20:46  INFO      __main__  打分范式    : 43-way 5-shot 原型欧氏距离
+2026-03-29 21:20:46  INFO      __main__  设备        : cuda
+2026-03-29 21:20:46  INFO      __main__  ============================================================
+2026-03-29 21:20:46  INFO      __main__  加载数据集 …

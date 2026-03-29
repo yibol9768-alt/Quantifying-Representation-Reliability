@@ -1,0 +1,40 @@
+{
+  "dataset": "eurosat",
+  "models": [
+    "deit_small",
+    "dinov2_small",
+    "convnext_tiny",
+    "vit_base",
+    "convnext_base",
+    "vit_mae_base",
+    "dinov2_base",
+    "clip_vit_base",
+    "resnet50",
+    "siglip"
+  ],
+  "n_way": 10,
+  "k_values": [
+    1,
+    5,
+    10,
+    16
+  ],
+  "results": {
+    "1-shot": {
+      "mean": 0.9427110552787781,
+      "ci_95": 0.0027761206158175853
+    },
+    "5-shot": {
+      "mean": 0.9700333476066589,
+      "ci_95": 0.0011321273944314327
+    },
+    "10-shot": {
+      "mean": 0.9697999954223633,
+      "ci_95": 0.0011121182692515597
+    },
+    "16-shot": {
+      "mean": 0.9745110869407654,
+      "ci_95": 0.0010364587041165874
+    }
+  }
+}

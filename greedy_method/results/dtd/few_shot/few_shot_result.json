@@ -1,0 +1,40 @@
+{
+  "dataset": "dtd",
+  "models": [
+    "dinov2_base",
+    "resnet50",
+    "dinov2_small",
+    "vit_mae_base",
+    "clip_vit_base",
+    "siglip",
+    "vit_base",
+    "deit_small",
+    "convnext_tiny",
+    "convnext_base"
+  ],
+  "n_way": 5,
+  "k_values": [
+    1,
+    5,
+    10,
+    16
+  ],
+  "results": {
+    "1-shot": {
+      "mean": 0.8767112493515015,
+      "ci_95": 0.006581870801400865
+    },
+    "5-shot": {
+      "mean": 0.9326888918876648,
+      "ci_95": 0.003734581424619559
+    },
+    "10-shot": {
+      "mean": 0.9416000247001648,
+      "ci_95": 0.0030871437179182024
+    },
+    "16-shot": {
+      "mean": 0.9483999609947205,
+      "ci_95": 0.003081752845166745
+    }
+  }
+}

@@ -1,0 +1,176 @@
+{
+  "dataset": "eurosat",
+  "shots": {
+    "1": {
+      "best_k": 8,
+      "best_acc": 0.9670001268386841,
+      "all_accuracies": [
+        0.8747333288192749,
+        0.9304667711257935,
+        0.9523334503173828,
+        0.9573999643325806,
+        0.9600666761398315,
+        0.9625333547592163,
+        0.9641333818435669,
+        0.9670001268386841,
+        0.9661334156990051,
+        0.9662001132965088
+      ],
+      "ordered_models": [
+        "deit_small",
+        "vit_mae_base",
+        "dinov2_base",
+        "siglip",
+        "vit_base",
+        "clip_vit_base",
+        "convnext_tiny",
+        "resnet50",
+        "dinov2_small",
+        "convnext_base"
+      ],
+      "optimal_models": [
+        "deit_small",
+        "vit_mae_base",
+        "dinov2_base",
+        "siglip",
+        "vit_base",
+        "clip_vit_base",
+        "convnext_tiny",
+        "resnet50"
+      ]
+    },
+    "5": {
+      "best_k": 10,
+      "best_acc": 0.9903333783149719,
+      "all_accuracies": [
+        0.972266674041748,
+        0.9804666638374329,
+        0.9838667511940002,
+        0.9865333437919617,
+        0.9860000014305115,
+        0.9881332516670227,
+        0.9887333512306213,
+        0.9898666143417358,
+        0.9896665811538696,
+        0.9903333783149719
+      ],
+      "ordered_models": [
+        "convnext_tiny",
+        "siglip",
+        "clip_vit_base",
+        "dinov2_base",
+        "vit_mae_base",
+        "deit_small",
+        "vit_base",
+        "dinov2_small",
+        "convnext_base",
+        "resnet50"
+      ],
+      "optimal_models": [
+        "convnext_tiny",
+        "siglip",
+        "clip_vit_base",
+        "dinov2_base",
+        "vit_mae_base",
+        "deit_small",
+        "vit_base",
+        "dinov2_small",
+        "convnext_base",
+        "resnet50"
+      ]
+    },
+    "10": {
+      "best_k": 10,
+      "best_acc": 0.9899333715438843,
+      "all_accuracies": [
+        0.9715999364852905,
+        0.982866644859314,
+        0.986133337020874,
+        0.9884666204452515,
+        0.9874667525291443,
+        0.9891999959945679,
+        0.9893333315849304,
+        0.9887332916259766,
+        0.9896000623703003,
+        0.9899333715438843
+      ],
+      "ordered_models": [
+        "dinov2_small",
+        "siglip",
+        "clip_vit_base",
+        "convnext_base",
+        "vit_mae_base",
+        "dinov2_base",
+        "convnext_tiny",
+        "vit_base",
+        "deit_small",
+        "resnet50"
+      ],
+      "optimal_models": [
+        "dinov2_small",
+        "siglip",
+        "clip_vit_base",
+        "convnext_base",
+        "vit_mae_base",
+        "dinov2_base",
+        "convnext_tiny",
+        "vit_base",
+        "deit_small",
+        "resnet50"
+      ]
+    },
+    "16": {
+      "best_k": 8,
+      "best_acc": 0.9905333518981934,
+      "all_accuracies": [
+        0.9737333059310913,
+        0.9832666516304016,
+        0.9847333431243896,
+        0.9858667254447937,
+        0.9875999689102173,
+        0.9873332977294922,
+        0.9900667071342468,
+        0.9905333518981934,
+        0.9905332922935486,
+        0.9904667139053345
+      ],
+      "ordered_models": [
+        "dinov2_small",
+        "siglip",
+        "clip_vit_base",
+        "convnext_base",
+        "vit_base",
+        "vit_mae_base",
+        "dinov2_base",
+        "convnext_tiny",
+        "deit_small",
+        "resnet50"
+      ],
+      "optimal_models": [
+        "dinov2_small",
+        "siglip",
+        "clip_vit_base",
+        "convnext_base",
+        "vit_base",
+        "vit_mae_base",
+        "dinov2_base",
+        "convnext_tiny"
+      ]
+    }
+  },
+  "best_overall": {
+    "n_shot": 16,
+    "best_k": 8,
+    "best_acc": 0.9905333518981934,
+    "optimal_models": [
+      "dinov2_small",
+      "siglip",
+      "clip_vit_base",
+      "convnext_base",
+      "vit_base",
+      "vit_mae_base",
+      "dinov2_base",
+      "convnext_tiny"
+    ]
+  }
+}
