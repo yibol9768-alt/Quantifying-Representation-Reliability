@@ -1,0 +1,175 @@
+{
+  "dataset": "dtd",
+  "shots": {
+    "1": {
+      "best_k": 7,
+      "best_acc": 0.8950001001358032,
+      "all_accuracies": [
+        0.863466739654541,
+        0.8720666766166687,
+        0.8870667815208435,
+        0.8886666893959045,
+        0.8887333869934082,
+        0.8934000134468079,
+        0.8950001001358032,
+        0.8894000053405762,
+        0.8907999992370605,
+        0.8939334750175476
+      ],
+      "ordered_models": [
+        "dinov2_base",
+        "vit_base",
+        "clip_vit_base",
+        "dinov2_small",
+        "convnext_base",
+        "siglip",
+        "deit_small",
+        "convnext_tiny",
+        "resnet50",
+        "vit_mae_base"
+      ],
+      "optimal_models": [
+        "dinov2_base",
+        "vit_base",
+        "clip_vit_base",
+        "dinov2_small",
+        "convnext_base",
+        "siglip",
+        "deit_small"
+      ]
+    },
+    "5": {
+      "best_k": 8,
+      "best_acc": 0.9510000348091125,
+      "all_accuracies": [
+        0.9295334815979004,
+        0.9386667609214783,
+        0.9435999989509583,
+        0.9440000653266907,
+        0.9440667033195496,
+        0.9464668035507202,
+        0.947866678237915,
+        0.9510000348091125,
+        0.9494667053222656,
+        0.9495334029197693
+      ],
+      "ordered_models": [
+        "dinov2_base",
+        "siglip",
+        "clip_vit_base",
+        "convnext_base",
+        "dinov2_small",
+        "vit_base",
+        "resnet50",
+        "deit_small",
+        "vit_mae_base",
+        "convnext_tiny"
+      ],
+      "optimal_models": [
+        "dinov2_base",
+        "siglip",
+        "clip_vit_base",
+        "convnext_base",
+        "dinov2_small",
+        "vit_base",
+        "resnet50",
+        "deit_small"
+      ]
+    },
+    "10": {
+      "best_k": 10,
+      "best_acc": 0.952333390712738,
+      "all_accuracies": [
+        0.9364000558853149,
+        0.9391334056854248,
+        0.9446000456809998,
+        0.9461333751678467,
+        0.9503333568572998,
+        0.9475334286689758,
+        0.9503333568572998,
+        0.9515999555587769,
+        0.9519334435462952,
+        0.952333390712738
+      ],
+      "ordered_models": [
+        "dinov2_base",
+        "siglip",
+        "clip_vit_base",
+        "convnext_base",
+        "vit_base",
+        "dinov2_small",
+        "resnet50",
+        "vit_mae_base",
+        "convnext_tiny",
+        "deit_small"
+      ],
+      "optimal_models": [
+        "dinov2_base",
+        "siglip",
+        "clip_vit_base",
+        "convnext_base",
+        "vit_base",
+        "dinov2_small",
+        "resnet50",
+        "vit_mae_base",
+        "convnext_tiny",
+        "deit_small"
+      ]
+    },
+    "16": {
+      "best_k": 9,
+      "best_acc": 0.9575334191322327,
+      "all_accuracies": [
+        0.9363332986831665,
+        0.9505334496498108,
+        0.9521999955177307,
+        0.9533332586288452,
+        0.954800009727478,
+        0.9561333656311035,
+        0.9560000896453857,
+        0.9555999636650085,
+        0.9575334191322327,
+        0.9570666551589966
+      ],
+      "ordered_models": [
+        "dinov2_base",
+        "siglip",
+        "clip_vit_base",
+        "convnext_base",
+        "vit_base",
+        "resnet50",
+        "dinov2_small",
+        "vit_mae_base",
+        "convnext_tiny",
+        "deit_small"
+      ],
+      "optimal_models": [
+        "dinov2_base",
+        "siglip",
+        "clip_vit_base",
+        "convnext_base",
+        "vit_base",
+        "resnet50",
+        "dinov2_small",
+        "vit_mae_base",
+        "convnext_tiny"
+      ]
+    }
+  },
+  "best_overall": {
+    "n_shot": 16,
+    "best_k": 9,
+    "best_acc": 0.9575334191322327,
+    "optimal_models": [
+      "dinov2_base",
+      "siglip",
+      "clip_vit_base",
+      "convnext_base",
+      "vit_base",
+      "resnet50",
+      "dinov2_small",
+      "vit_mae_base",
+      "convnext_tiny"
+    ]
+  }
+}
